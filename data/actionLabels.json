@@ -1,0 +1,13 @@
+{
+  "Drink": "#FF9009",
+  "Pour": "#22D5EE",
+  "Stir": "#9422F5",
+  "Spill": "#464BFB",
+  "Pick up": "#22C55E",
+  "Put down": "#F4CF0C",
+  "Carry": "#38BDF8",
+  "Approach": "#F54CBE",
+  "Move away": "#F94747",
+  "Look at": "#F471B5",
+  "Drop": "#89DE0A"
+}

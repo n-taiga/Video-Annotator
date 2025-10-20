@@ -1,6 +1,7 @@
 frontend/node_modules/
 node_modules/
-data/
+data/annotations
+data/videos
 __pycache__/
 *.pyc
 *.pyo
