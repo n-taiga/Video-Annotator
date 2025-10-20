@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
-import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation } from './api'
+import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation, fetchActionLabels, updateActionLabels } from './api'
+import type { ActionLabelDictionary } from './api'
 import LabelTimeline from './components/LabelTimeline'
 import VideoPanel from './components/VideoPanel'
 import PreviewPanel from './components/PreviewPanel'
@@ -8,9 +9,10 @@ import TimelineSection from './components/TimelineSection'
 import ActionTable from './components/ActionTable'
 import WaveformTimeline from './components/WaveformTimeline'
 import { ensureLabelColors, getLabelColor, LabelColorMap } from './utils/colors'
-import { DEFAULT_ACTIONS, mergeActions } from './utils/actions'
+import { mergeActions } from './utils/actions'
 import SideMenu from './components/SideMenu'
 import ConfigurationPanel from './components/ConfigurationPanel'
+import { cloneLabelDictionary } from './utils/labelConfig'
 
 type SaveStatus = {
   status: 'idle' | 'saving' | 'success' | 'error'
@@ -109,20 +111,22 @@ function formatFpsValue(value: number | null): string {
   return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(2)
 }
 
-// Default actions are managed in utils/actions.ts
-
 export default function App() {
+  const initialLabelDictionary = useMemo(() => cloneLabelDictionary(), [])
+  const initialActionList = useMemo(() => Object.keys(initialLabelDictionary), [initialLabelDictionary])
+
   const [scenarioId, setScenarioId] = useState('scene_001')
   const [videoId, setVideoId] = useState('vid_001')
   const [taskLabel, setTaskLabel] = useState('make coffee')
   const [environment, setEnvironment] = useState('kitchen')
   const [objectName, setObjectName] = useState('cup')
-  const [actions, setActions] = useState<string[]>(DEFAULT_ACTIONS)
+  const baseActionsRef = useRef<string[]>(initialActionList)
+  const [actions, setActions] = useState<string[]>(initialActionList)
   const [interactions, setInteractions] = useState<Interaction[]>([])
   const [videoOptions, setVideoOptions] = useState<string[]>([])
   const [selectedVideoFile, setSelectedVideoFile] = useState('vid_001.mp4')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ open: false })
-  const [selectionMenuAction, setSelectionMenuAction] = useState(actions[0] ?? '')
+  const [selectionMenuAction, setSelectionMenuAction] = useState(initialActionList[0] ?? '')
   const interactionMenuRef = useRef<HTMLDivElement | null>(null)
   const selectionMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -146,7 +150,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0)
   const currentTimeRef = useRef(0)
   const [dragRange, setDragRange] = useState<DragRange>({ start: null, end: null })
-  const [selectedAction, setSelectedAction] = useState(actions[0] ?? '')
+  const [selectedAction, setSelectedAction] = useState(initialActionList[0] ?? '')
   const [contact, setContact] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ status: 'idle' })
   const [hoverInfo, setHoverInfo] = useState<{ visible: boolean; x: number; y: number; label: string; color: string; index: number | null }>({ visible: false, x: 0, y: 0, label: '', color: '#94a3b8', index: null })
@@ -165,7 +169,67 @@ export default function App() {
     fps: null,
     fpsSource: 'assumed'
   })
-  const [labelColors, setLabelColors] = useState<LabelColorMap>(() => ensureLabelColors(DEFAULT_ACTIONS))
+  const [labelColors, setLabelColors] = useState<LabelColorMap>(() => ensureLabelColors(initialActionList, initialLabelDictionary))
+  const [loadingActionLabels, setLoadingActionLabels] = useState(true)
+  const [savingActionLabels, setSavingActionLabels] = useState(false)
+  const [actionLabelError, setActionLabelError] = useState<string | null>(null)
+
+  const applyActionLabelDictionary = useCallback((dictionary: ActionLabelDictionary) => {
+    let sanitized = cloneLabelDictionary(dictionary)
+    if (Object.keys(sanitized).length === 0) {
+      sanitized = cloneLabelDictionary(initialLabelDictionary)
+    }
+    const actionList = Object.keys(sanitized)
+  baseActionsRef.current = actionList
+    setActions(actionList)
+    setLabelColors(() => ensureLabelColors(actionList, sanitized))
+    setSelectedAction(prev => (actionList.includes(prev) ? prev : actionList[0] ?? ''))
+    setSelectionMenuAction(prev => (actionList.includes(prev) ? prev : actionList[0] ?? ''))
+    return { sanitized, actionList }
+  }, [initialLabelDictionary])
+
+  const loadActionLabels = useCallback(async () => {
+    setLoadingActionLabels(true)
+    try {
+      const remote = await fetchActionLabels()
+      const { sanitized } = applyActionLabelDictionary(remote)
+      setActionLabelError(null)
+      return sanitized
+    } catch (err) {
+      console.error('Failed to load action labels', err)
+      const message = err instanceof Error ? err.message : 'Failed to load action labels.'
+      setActionLabelError(message)
+      throw err
+    } finally {
+      setLoadingActionLabels(false)
+    }
+  }, [applyActionLabelDictionary])
+
+  const persistActionLabels = useCallback(async (next: ActionLabelDictionary, options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent)
+    if (!silent) setSavingActionLabels(true)
+    try {
+      const updated = await updateActionLabels(next)
+      const { sanitized } = applyActionLabelDictionary(updated)
+      setActionLabelError(null)
+      return sanitized
+    } catch (err) {
+      console.error('Failed to update action labels', err)
+      const message = err instanceof Error ? err.message : 'Failed to update action labels.'
+      setActionLabelError(message)
+      throw err
+    } finally {
+      if (!silent) setSavingActionLabels(false)
+    }
+  }, [applyActionLabelDictionary])
+
+  const reloadActionLabels = useCallback(() => {
+    void loadActionLabels().catch(() => undefined)
+  }, [loadActionLabels])
+
+  useEffect(() => {
+    void loadActionLabels().catch(() => undefined)
+  }, [loadActionLabels])
 
   useEffect(() => {
     setSaveStatus({ status: 'idle' })
@@ -192,6 +256,22 @@ export default function App() {
         ? `　Assumed default (${DEFAULT_VIDEO_FPS} fps)`
         : undefined
   const interactionCount = interactions.length
+
+  const activeInteraction = useMemo(() => {
+    if (!Number.isFinite(currentTime)) return null
+    let candidate: Interaction | null = null
+    for (const interaction of interactions) {
+      if (interaction.start_time <= currentTime && currentTime <= interaction.end_time) {
+        if (!candidate || interaction.start_time > candidate.start_time || (interaction.start_time === candidate.start_time && interaction.end_time < candidate.end_time)) {
+          candidate = interaction
+        }
+      }
+    }
+    return candidate
+  }, [interactions, currentTime])
+
+  const activeTimelineLabel = activeInteraction?.action_label ?? ''
+  const activeTimelineColor = activeTimelineLabel ? getLabelColor(labelColors, activeTimelineLabel, '#94A3B8') : '#94A3B8'
 
   useEffect(() => {
     currentTimeRef.current = currentTime
@@ -430,7 +510,7 @@ export default function App() {
           if (typeof first.task_label === 'string') setTaskLabel(first.task_label)
           if (typeof first.environment === 'string') setEnvironment(first.environment)
           if (typeof first.object === 'string') setObjectName(first.object)
-          if (uniqActions.length > 0) setActions(() => mergeActions(DEFAULT_ACTIONS, uniqActions))
+          if (uniqActions.length > 0) setActions(() => mergeActions(baseActionsRef.current, uniqActions))
           setInteractions(interactions)
           return
         }
@@ -443,7 +523,7 @@ export default function App() {
         if (typeof data.object === 'string') setObjectName(data.object)
         if (Array.isArray(data.actions) && data.actions.length > 0) {
           // Merge defaults with loaded actions so options never shrink
-          setActions(() => mergeActions(DEFAULT_ACTIONS, data.actions))
+          setActions(() => mergeActions(baseActionsRef.current, data.actions))
         }
         if (Array.isArray(data.interactions)) {
           setInteractions(data.interactions)
@@ -844,27 +924,200 @@ export default function App() {
     setContextMenu({ open: false })
   }
 
-  function handleRemoveAction(actionName: string) {
+  const normalizeHexColor = useCallback((value: string): string => {
+    if (typeof value !== 'string') return '#94A3B8'
+    let color = value.trim()
+    if (!color) return '#94A3B8'
+    if (!color.startsWith('#')) return color
+    let hex = color.slice(1).toUpperCase()
+    if (hex.length === 3) {
+      hex = `${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
+    }
+    if (hex.length !== 6) {
+      hex = hex.padEnd(6, '0').slice(0, 6)
+    }
+    return `#${hex}`
+  }, [])
+
+  const handleChangeActionColor = useCallback(async (actionName: string, colorValue: string) => {
     const trimmed = actionName.trim()
     if (!trimmed) return
-    setActions(prev => {
-      if (!prev.includes(trimmed)) return prev
-      const next = prev.filter(action => action !== trimmed)
-      setSelectedAction(current => (next.includes(current) ? current : next[0] ?? ''))
-      setSelectionMenuAction(current => (current === trimmed ? '' : current))
-      return next
+    if (loadingActionLabels || savingActionLabels) return
+    const normalized = normalizeHexColor(colorValue)
+    const currentColor = labelColors[trimmed]
+    if (currentColor && currentColor.toUpperCase() === normalized.toUpperCase()) {
+      return
+    }
+    const orderedLabels = baseActionsRef.current.length > 0 ? baseActionsRef.current : actions
+    const optimisticMap: ActionLabelDictionary = { ...labelColors, [trimmed]: normalized }
+    setLabelColors(prev => ensureLabelColors(orderedLabels, optimisticMap))
+    const nextDictionary: ActionLabelDictionary = {}
+    orderedLabels.forEach(label => {
+      const existing = optimisticMap[label] ?? '#94A3B8'
+      nextDictionary[label] = existing
     })
-    setInteractions(prev => prev.filter(interaction => interaction.action_label !== trimmed))
-    setUndoStack([])
-    setRedoStack([])
+    try {
+      await persistActionLabels(nextDictionary, { silent: true })
+    } catch (err) {
+      console.error('Failed to change action label color', err)
+      void loadActionLabels().catch(() => undefined)
+    }
+  }, [actions, labelColors, loadActionLabels, loadingActionLabels, normalizeHexColor, persistActionLabels, savingActionLabels])
+
+  const handleAddAction = useCallback(async (): Promise<string | null> => {
+    if (loadingActionLabels || savingActionLabels) return null
+    const baseName = 'None'
+    const ordered = baseActionsRef.current.length > 0 ? [...baseActionsRef.current] : [...actions]
+    let candidate = baseName
+    let suffix = 2
+    while (ordered.includes(candidate)) {
+      candidate = `${baseName} ${suffix}`
+      suffix += 1
+    }
+
+    const prevActionsList = [...actions]
+    const prevLabelMap = { ...labelColors }
+    const prevBaseActions = [...ordered]
+
+    const nextOrder = [...ordered, candidate]
+    const nextColors = { ...labelColors, [candidate]: '#FFFFFF' }
+
+    baseActionsRef.current = nextOrder
+    setActions(nextOrder)
+    setLabelColors(ensureLabelColors(nextOrder, nextColors))
+    setActionLabelError(null)
+
+    const nextDictionary: ActionLabelDictionary = {}
+    nextOrder.forEach(label => {
+      if (label === candidate) {
+        nextDictionary[label] = '#FFFFFF'
+      } else {
+        const color = labelColors[label] ?? '#94A3B8'
+        nextDictionary[label] = color
+      }
+    })
+
+    try {
+      await persistActionLabels(nextDictionary)
+      return candidate
+    } catch (err) {
+      console.error('Failed to add action label', err)
+      baseActionsRef.current = prevBaseActions
+      setActions(prevActionsList)
+      setLabelColors(ensureLabelColors(prevBaseActions, prevLabelMap))
+      setActionLabelError(err instanceof Error ? err.message : 'Failed to add action label.')
+      return null
+    }
+  }, [actions, labelColors, loadingActionLabels, persistActionLabels, savingActionLabels])
+
+  const handleRenameAction = useCallback(async (previousName: string, rawNextName: string): Promise<boolean> => {
+    if (loadingActionLabels || savingActionLabels) return false
+    const trimmed = rawNextName.trim()
+    const current = previousName.trim()
+    if (!current) return false
+    if (!trimmed) {
+      setActionLabelError('Label name cannot be empty.')
+      return false
+    }
+    if (trimmed === current) {
+      return true
+    }
+
+    const ordered = baseActionsRef.current.length > 0 ? [...baseActionsRef.current] : [...actions]
+    if (!ordered.includes(current)) {
+      setActionLabelError('Original label could not be found.')
+      return false
+    }
+    if (ordered.includes(trimmed)) {
+      setActionLabelError('A label with that name already exists.')
+      return false
+    }
+
+    const prevBaseActions = [...ordered]
+    const prevActionsList = [...actions]
+    const prevLabelMap = { ...labelColors }
+    const prevInteractions = interactions.map(item => ({ ...item }))
+    const prevUndoStack = undoStack.map(history => history.map(item => ({ ...item })))
+    const prevRedoStack = redoStack.map(history => history.map(item => ({ ...item })))
+    const prevSelected = selectedAction
+    const prevSelectionMenu = selectionMenuAction
+    const prevHover = hoverInfo
+
+    const nextOrder = ordered.map(label => (label === current ? trimmed : label))
+    const renamedColor = labelColors[current] ?? '#94A3B8'
+    const nextDictionary: ActionLabelDictionary = {}
+    nextOrder.forEach(label => {
+      if (label === trimmed) {
+        nextDictionary[label] = renamedColor
+      } else {
+        const color = labelColors[label] ?? '#94A3B8'
+        nextDictionary[label] = color
+      }
+    })
+
+    baseActionsRef.current = nextOrder
+    setActions(nextOrder)
     setLabelColors(prev => {
-      if (!prev[trimmed]) return prev
       const next = { ...prev }
-      delete next[trimmed]
-      return next
+      const stored = next[current]
+      delete next[current]
+      next[trimmed] = stored ?? renamedColor
+      return ensureLabelColors(nextOrder, next)
     })
-    setContextMenu({ open: false })
-    setHoverInfo(info => (info.visible && info.label === trimmed ? { ...info, visible: false } : info))
+    setInteractions(prev => prev.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item)))
+    setUndoStack(prev => prev.map(history => history.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item))))
+    setRedoStack(prev => prev.map(history => history.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item))))
+    setSelectedAction(prev => (prev === current ? trimmed : prev))
+    setSelectionMenuAction(prev => (prev === current ? trimmed : prev))
+    setHoverInfo(prev => (prev.label === current ? { ...prev, label: trimmed, color: renamedColor } : prev))
+    setActionLabelError(null)
+
+    try {
+      await persistActionLabels(nextDictionary)
+      return true
+    } catch (err) {
+      console.error('Failed to rename action label', err)
+      baseActionsRef.current = prevBaseActions
+      setActions(prevActionsList)
+      setLabelColors(ensureLabelColors(prevBaseActions, prevLabelMap))
+      setInteractions(prevInteractions)
+      setUndoStack(prevUndoStack)
+      setRedoStack(prevRedoStack)
+      setSelectedAction(prevSelected)
+      setSelectionMenuAction(prevSelectionMenu)
+      setHoverInfo(prevHover)
+      setActionLabelError(err instanceof Error ? err.message : 'Failed to rename action label.')
+      return false
+    }
+  }, [actions, hoverInfo, interactions, labelColors, loadingActionLabels, persistActionLabels, redoStack, savingActionLabels, selectedAction, selectionMenuAction, undoStack])
+
+  async function handleRemoveAction(actionName: string) {
+    const trimmed = actionName.trim()
+    if (!trimmed) return
+    if (loadingActionLabels || savingActionLabels) return
+    if (!actions.includes(trimmed)) return
+    if (actions.length <= 1) {
+      setActionLabelError('At least one action label must remain.')
+      return
+    }
+    const nextDictionary: ActionLabelDictionary = {}
+    actions.forEach(label => {
+      if (label === trimmed) return
+      const color = labelColors[label]
+      if (typeof color === 'string' && color.trim()) {
+        nextDictionary[label] = color
+      }
+    })
+    try {
+      await persistActionLabels(nextDictionary)
+      setInteractions(prev => prev.filter(interaction => interaction.action_label !== trimmed))
+      setUndoStack([])
+      setRedoStack([])
+      setContextMenu({ open: false })
+      setHoverInfo(info => (info.visible && info.label === trimmed ? { ...info, visible: false } : info))
+    } catch (err) {
+      console.error('Failed to remove action label', err)
+    }
   }
 
   const handleConfigWheel = (event: React.WheelEvent<HTMLDivElement>) => {
@@ -1204,7 +1457,18 @@ export default function App() {
               <line x1="6" y1="18" x2="18" y2="6" />
             </svg>
           </button>
-          <ConfigurationPanel actions={actions} labelColors={labelColors} onRemoveAction={handleRemoveAction} />
+          <ConfigurationPanel
+            actions={actions}
+            labelColors={labelColors}
+            onRemoveAction={handleRemoveAction}
+            onChangeColor={handleChangeActionColor}
+            onAddAction={handleAddAction}
+            onRenameAction={handleRenameAction}
+            loading={loadingActionLabels}
+            saving={savingActionLabels}
+            error={actionLabelError}
+            onRetry={reloadActionLabels}
+          />
         </div>
       )}
 
@@ -1257,6 +1521,8 @@ export default function App() {
             onToggleMute={() => setMuted(m => !m)}
             playbackRate={playbackRate}
             onPlaybackRateChange={setPlaybackRate}
+            activeLabel={activeTimelineLabel || undefined}
+            activeColor={activeTimelineLabel ? activeTimelineColor : undefined}
           />
 
           <TimelineSection

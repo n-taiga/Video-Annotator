@@ -1,10 +1,10 @@
-import { definitionsToColorMap } from './labelConfig'
+import { cloneLabelDictionary } from './labelConfig'
 
 export const PALETTE = ['#f97316','#22d3ee','#a855f7','#f973d5','#22c55e','#facc15','#fb7185','#38bdf8','#94a3b8','#f471b5']
 
 export type LabelColorMap = Record<string, string>
 
-export const DEFAULT_LABEL_COLOR_MAP: LabelColorMap = definitionsToColorMap()
+export const DEFAULT_LABEL_COLOR_MAP: LabelColorMap = cloneLabelDictionary()
 
 function generateHarmonicColor(seed: number) {
   const hue = (seed * 137.508 + 45) % 360

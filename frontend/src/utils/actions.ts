@@ -1,7 +1,7 @@
 // Central place to manage default action labels and utilities
-import { DEFAULT_LABEL_DEFINITIONS } from './labelConfig'
+import { cloneLabelDictionary } from './labelConfig'
 
-export const DEFAULT_ACTIONS: string[] = DEFAULT_LABEL_DEFINITIONS.map(def => def.name)
+export const DEFAULT_ACTIONS: string[] = Object.keys(cloneLabelDictionary())
 
 // Merge default actions with incoming actions while preserving order and removing duplicates
 export function mergeActions(defaults: string[], incoming: string[]): string[] {

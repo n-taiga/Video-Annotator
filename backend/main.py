@@ -2,12 +2,14 @@ import json
 import mimetypes
 import os
 from pathlib import Path
-from typing import List
+from threading import Lock
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from models import Annotation
+from pydantic import BaseModel
 
 app = FastAPI()
 app.add_middleware(
@@ -23,6 +25,105 @@ DEFAULT_VIDEO_DIR = Path(os.environ.get("VIDEO_DIRECTORY", Path(__file__).resolv
 DEFAULT_ANNOTATION_DIR = Path(
     os.environ.get("ANNOTATION_DIRECTORY", "/data/annotations")
 )
+
+DEFAULT_ACTION_LABELS: Dict[str, str] = {
+    "Drink": "#F97316",
+    "Pour": "#22D3EE",
+    "Stir": "#A855F7",
+    "Spill": "#FB7185",
+    "Pick up": "#22C55E",
+    "Put down": "#FACC15",
+    "Carry": "#38BDF8",
+    "Look at": "#F471B5",
+    "Point at": "#94A3B8",
+    "Approach": "#F973D5",
+    "Move away": "#0EA5E9",
+    "None": "#64748B",
+}
+
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+ACTION_LABELS_PATH = Path(os.environ.get("ACTION_LABELS_PATH", _DEFAULT_DATA_DIR / "actionLabels.json")).resolve()
+ACTION_LABEL_LOCK = Lock()
+
+
+def _normalize_color(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Color values cannot be empty")
+    if raw.startswith('#'):
+        raw = raw[1:]
+    raw = raw.upper()
+    if len(raw) not in (3, 6) or any(ch not in "0123456789ABCDEF" for ch in raw):
+        raise HTTPException(status_code=400, detail=f"Invalid color code '#{raw}'")
+    return f"#{raw}"
+
+
+def _normalize_action_labels(raw: Dict[str, str], *, allow_empty: bool = False) -> Dict[str, str]:
+    normalized: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        label = key.strip()
+        if not label:
+            continue
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f"Invalid color for label '{label}'")
+        normalized[label] = _normalize_color(value)
+    if not normalized:
+        if allow_empty:
+            return {}
+        raise HTTPException(status_code=400, detail="At least one action label must be provided")
+    return normalized
+
+
+def _ensure_action_label_file() -> None:
+    path = ACTION_LABELS_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot create directory for action labels: {path.parent}") from exc
+    if path.exists():
+        return
+    try:
+        path.write_text(json.dumps(DEFAULT_ACTION_LABELS, ensure_ascii=False, indent=2), encoding='utf-8')
+    except PermissionError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot write action labels file: {path}") from exc
+
+
+def _load_action_labels() -> Dict[str, str]:
+    with ACTION_LABEL_LOCK:
+        _ensure_action_label_file()
+        try:
+            data = json.loads(ACTION_LABELS_PATH.read_text(encoding='utf-8'))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read action labels: {exc}") from exc
+        if not isinstance(data, dict):
+            # Reset to defaults if file is corrupt
+            ACTION_LABELS_PATH.write_text(json.dumps(DEFAULT_ACTION_LABELS, ensure_ascii=False, indent=2), encoding='utf-8')
+            return dict(DEFAULT_ACTION_LABELS)
+        try:
+            normalized = _normalize_action_labels(data, allow_empty=False)
+        except HTTPException:
+            ACTION_LABELS_PATH.write_text(json.dumps(DEFAULT_ACTION_LABELS, ensure_ascii=False, indent=2), encoding='utf-8')
+            return dict(DEFAULT_ACTION_LABELS)
+        if normalized != data:
+            ACTION_LABELS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding='utf-8')
+        return normalized
+
+
+def _save_action_labels(labels: Dict[str, str]) -> Dict[str, str]:
+    normalized = _normalize_action_labels(labels)
+    with ACTION_LABEL_LOCK:
+        try:
+            ACTION_LABELS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding='utf-8')
+        except PermissionError as exc:
+            raise HTTPException(status_code=500, detail=f"Cannot write action labels file: {ACTION_LABELS_PATH}") from exc
+    return normalized
+
+
+class ActionLabelPayload(BaseModel):
+    labels: Dict[str, str]
+
 
 
 def list_video_files(directory: Path) -> List[str]:
@@ -205,3 +306,15 @@ async def stream_video(filename: str):
     video_path = _resolve_video_path(filename)
     mime_type, _ = mimetypes.guess_type(video_path)
     return FileResponse(video_path, media_type=mime_type or 'application/octet-stream', filename=video_path.name)
+
+
+@app.get('/config/action-labels')
+async def get_action_labels():
+    labels = _load_action_labels()
+    return {"labels": labels}
+
+
+@app.put('/config/action-labels')
+async def update_action_labels(payload: ActionLabelPayload):
+    labels = _save_action_labels(payload.labels)
+    return {"labels": labels}

@@ -65,3 +65,59 @@ export async function fetchVideos(): Promise<string[]> {
   const data = await res.json();
   return Array.isArray(data.videos) ? data.videos : [];
 }
+
+export type ActionLabelDictionary = Record<string, string>
+
+function extractMessage(res: Response, fallback: string): Promise<string> {
+  return res
+    .json()
+    .then(body => {
+      if (body && typeof body === 'object' && typeof body.detail === 'string') {
+        return body.detail
+      }
+      return JSON.stringify(body)
+    })
+    .catch(async () => {
+      try {
+        return await res.text()
+      } catch {
+        return fallback
+      }
+    })
+}
+
+export async function fetchActionLabels(): Promise<ActionLabelDictionary> {
+  const res = await fetch(buildApiUrl('/config/action-labels'), { cache: 'no-store' })
+  if (!res.ok) {
+    const message = await extractMessage(res, `Failed to load action labels: ${res.status}`)
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const source = data && typeof data === 'object' && data.labels && typeof data.labels === 'object' ? data.labels : {}
+  const out: ActionLabelDictionary = {}
+  for (const [key, val] of Object.entries(source)) {
+    if (typeof key !== 'string' || typeof val !== 'string') continue
+    out[key] = val
+  }
+  return out
+}
+
+export async function updateActionLabels(labels: ActionLabelDictionary): Promise<ActionLabelDictionary> {
+  const res = await fetch(buildApiUrl('/config/action-labels'), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels }),
+  })
+  if (!res.ok) {
+    const message = await extractMessage(res, `Failed to update action labels: ${res.status}`)
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const source = data && typeof data === 'object' && data.labels && typeof data.labels === 'object' ? data.labels : {}
+  const out: ActionLabelDictionary = {}
+  for (const [key, val] of Object.entries(source)) {
+    if (typeof key !== 'string' || typeof val !== 'string') continue
+    out[key] = val
+  }
+  return out
+}
