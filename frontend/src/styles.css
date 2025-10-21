@@ -304,6 +304,20 @@ body {
   box-shadow: none;
 }
 
+/* Tabs in configuration panel */
+.config-tab-button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: transparent;
+  color: #e6eef8;
+  cursor: pointer;
+}
+.config-tab-button.active {
+  background: rgba(74,222,128,0.12);
+  border-color: rgba(74,222,128,0.25);
+}
+
 .config-action-table {
   width: 100%;
   border-collapse: collapse;
@@ -399,6 +413,64 @@ body {
   border-color: rgba(74, 222, 128, 0.75);
   box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.2);
 }
+
+/* Custom select used in the action form for Object selection */
+.custom-select {
+  display: inline-block;
+  min-width: 330px;
+}
+.custom-select .custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(34, 34, 34, 0.9);
+  border: 1px solid rgba(148,163,184,0.25);
+  border-radius: 8px;
+  color: #e6eef8;
+}
+.custom-select-list {
+  position: absolute;
+  margin-top: 6px;
+  left: 0;
+  right: 0;
+  background: rgba(34, 36, 39, 0.98);
+  border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(148,163,184,0.18);
+  z-index: 1400;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  max-height: 40vh;
+  overflow: auto;
+}
+.custom-select-option {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: #e6eef8;
+  border: none;
+  cursor: pointer;
+}
+.custom-select-option:hover { background: rgba(148,163,184,0.06); }
+.custom-select-option.is-selected { font-weight: 700; background: rgba(148,163,184,0.08); }
+.custom-select-add {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(148,163,184,0.04);
+  color: #e6eef8;
+  border: none;
+  cursor: pointer;
+}
+.custom-select-add:hover { background: rgba(148,163,184,0.08); }
+.custom-select-add-row { display: flex; gap: 8px; align-items: center; padding: 6px 4px; }
+/* Make the "New object" input a fixed, wider field so the Add/Cancel buttons don't get pushed out */
+.custom-select-add-row .input { width: 200px; flex: none; min-width: 140px; }
+
 
 .config-label-input:disabled {
   opacity: 0.65;
@@ -692,6 +764,25 @@ body {
   font-weight: 600;
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(8, 11, 19, 0.35);
+}
+
+/* Container for multiple active labels: stack vertically in top-left */
+.video-active-labels {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* When inside the labels container, make each label flow (not absolute) so they stack */
+.video-active-labels .video-active-label {
+  position: relative;
+  top: auto;
+  left: auto;
 }
 
 .video-active-label-swatch {

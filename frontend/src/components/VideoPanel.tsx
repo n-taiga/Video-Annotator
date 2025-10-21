@@ -12,11 +12,12 @@ interface VideoPanelProps {
   onToggleMute: () => void
   playbackRate: number
   onPlaybackRateChange: (r: number) => void
-  activeLabel?: string
-  activeColor?: string
+  // support multiple active labels overlapping the current time
+  activeLabels?: string[]
+  activeColors?: string[]
 }
 
-export default function VideoPanel({ videoKey, videoRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, activeLabel, activeColor }: VideoPanelProps) {
+export default function VideoPanel({ videoKey, videoRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, activeLabels, activeColors }: VideoPanelProps) {
   const handlePlay = () => videoRef.current?.play()
   const handlePause = () => videoRef.current?.pause()
 
@@ -24,10 +25,14 @@ export default function VideoPanel({ videoKey, videoRef, src, currentTime, durat
     <div className="video-pair">
       <div style={{flex:1}}>
         <div className="main-video">
-          {activeLabel ? (
-            <div className="video-active-label">
-              <span className="video-active-label-swatch" style={{ backgroundColor: activeColor ?? '#94A3B8' }} aria-hidden="true" />
-              <span className="video-active-label-text">{activeLabel}</span>
+          {activeLabels && activeLabels.length > 0 ? (
+            <div className="video-active-labels">
+              {activeLabels.map((label: string, idx: number) => (
+                <div key={`${label}-${idx}`} className="video-active-label">
+                  <span className="video-active-label-swatch" style={{ backgroundColor: (activeColors && activeColors[idx]) ?? '#94A3B8' }} aria-hidden="true" />
+                  <span className="video-active-label-text">{label}</span>
+                </div>
+              ))}
             </div>
           ) : null}
           <video

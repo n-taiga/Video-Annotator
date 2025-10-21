@@ -15,21 +15,36 @@ interface ConfigurationPanelProps {
   saving: boolean
   error: string | null
   onRetry: () => void
+  // Optional object label management props
+  objectOptions?: string[]
+  onRemoveObject?: (name: string) => Promise<void> | void
+  onChangeObjectColor?: (name: string, color: string) => Promise<void> | void
+  onAddObject?: () => Promise<string | null> | string | null
+  onRenameObject?: (previousName: string, nextName: string) => Promise<boolean> | boolean
+  loadingObjectLabels?: boolean
+  savingObjectLabels?: boolean
+  objectLabelError?: string | null
+  onRetryObject?: () => void
 }
 
-export default function ConfigurationPanel({ actions, labelColors, onRemoveAction, onChangeColor, onAddAction, onRenameAction, loading, saving, error, onRetry }: ConfigurationPanelProps) {
+export default function ConfigurationPanel({ actions, labelColors, onRemoveAction, onChangeColor, onAddAction, onRenameAction, loading, saving, error, onRetry, objectOptions, onRemoveObject, onChangeObjectColor, onAddObject, onRenameObject, loadingObjectLabels, savingObjectLabels, objectLabelError, onRetryObject }: ConfigurationPanelProps) {
   const disableRemove = saving || loading || actions.length <= 1
   const disableColorPicker = loading
   const [adding, setAdding] = useState(false)
   const [activeLabel, setActiveLabel] = useState<string | null>(null)
   const [editingLabel, setEditingLabel] = useState<string | null>(null)
+  const [editingObjectLabel, setEditingObjectLabel] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'action' | 'object'>('action')
   const [editingValue, setEditingValue] = useState('')
+  const [editingObjectValue, setEditingObjectValue] = useState('')
   const [renamePending, setRenamePending] = useState(false)
+  const [renamePendingObject, setRenamePendingObject] = useState(false)
   const [draftColors, setDraftColors] = useState<Record<string, string>>({})
   const triggerRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const [popoverPosition, setPopoverPosition] = useState<{ top: number; left: number } | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  const objectNameInputRef = useRef<HTMLInputElement | null>(null)
 
   const fallbackColor = '#94A3B8'
 
@@ -101,6 +116,14 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
     node.focus()
     node.select()
   }, [editingLabel])
+
+  useEffect(() => {
+    if (!editingObjectLabel) return
+    const node = objectNameInputRef.current
+    if (!node) return
+    node.focus()
+    node.select()
+  }, [editingObjectLabel])
 
   useEffect(() => {
     setDraftColors(prev => {
@@ -246,6 +269,12 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
     setRenamePending(false)
   }
 
+  const cancelRenameObject = () => {
+    setEditingObjectLabel(null)
+    setEditingObjectValue('')
+    setRenamePendingObject(false)
+  }
+
   const submitRename = useCallback(async () => {
     if (!editingLabel) return
     const currentLabel = editingLabel
@@ -284,6 +313,38 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
     setEditingValue('')
   }, [editingLabel, editingValue, onRenameAction, renamePending])
 
+  const submitRenameObject = useCallback(async () => {
+    if (!editingObjectLabel) return false
+    const currentLabel = editingObjectLabel
+    const trimmed = editingObjectValue.trim()
+    if (!trimmed) {
+      setEditingObjectValue(currentLabel)
+      return false
+    }
+    if (trimmed === currentLabel) {
+      setEditingObjectLabel(null)
+      setEditingObjectValue('')
+      return true
+    }
+    if (renamePendingObject) return false
+    setRenamePendingObject(true)
+    let success = false
+    try {
+      if (typeof onRenameObject === 'function') {
+        const outcome = await onRenameObject(currentLabel, trimmed)
+        success = outcome !== false
+      }
+    } catch (err) {
+      console.error('Failed to rename object label', err)
+    } finally {
+      setRenamePendingObject(false)
+    }
+    if (!success) return false
+    setEditingObjectLabel(null)
+    setEditingObjectValue('')
+    return true
+  }, [editingObjectLabel, editingObjectValue, onRenameObject, renamePendingObject])
+
   const handleAddClick = async () => {
     if (loading || saving || adding) return
     setAdding(true)
@@ -297,6 +358,22 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
       console.error('Failed to add action label', err)
     } finally {
       setAdding(false)
+    }
+  }
+
+  // Add object button inside configuration panel should start inline rename like actions
+  const handleAddObjectClick = async () => {
+    if (/* @ts-ignore */ loadingObjectLabels || /* @ts-ignore */ savingObjectLabels) return
+    try {
+      // @ts-ignore
+      const result = await (typeof onAddObject === 'function' ? onAddObject() : null)
+      if (typeof result === 'string' && result) {
+        // Enter inline rename mode for the new object
+        setEditingObjectLabel(result)
+        setEditingObjectValue(result)
+      }
+    } catch (err) {
+      console.error('Failed to add object label (panel)', err)
     }
   }
 
@@ -317,7 +394,29 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
           </div>
         )}
 
-        <section className="config-section config-section-scrollable">
+        {/* Tab bar for Action/Object */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <button
+            type="button"
+            className={`config-tab-button${activeTab === 'action' ? ' active' : ''}`}
+            onClick={() => setActiveTab('action')}
+            aria-pressed={activeTab === 'action'}
+          >
+            Action
+          </button>
+          <button
+            type="button"
+            className={`config-tab-button${activeTab === 'object' ? ' active' : ''}`}
+            onClick={() => setActiveTab('object')}
+            aria-pressed={activeTab === 'object'}
+          >
+            Object
+          </button>
+        </div>
+
+        {/* Action labels section */}
+        {activeTab === 'action' && (
+          <section className="config-section config-section-scrollable">
           <header className="config-section-header">
             <div className="config-section-header-row">
               <div className="config-section-header-copy">
@@ -444,7 +543,124 @@ export default function ConfigurationPanel({ actions, labelColors, onRemoveActio
               </table>
             </div>
           )}
-        </section>
+          </section>
+        )}
+
+        {/* Object Labels section - mirrors Action Labels management when optional props are provided */}
+        {activeTab === 'object' && (
+          <section className="config-section config-section-scrollable">
+          <header className="config-section-header">
+            <div className="config-section-header-row">
+              <div className="config-section-header-copy">
+                <h3>Object Labels</h3>
+                <p>Manage object names used in annotations.</p>
+              </div>
+              <button
+                type="button"
+                className="config-add-button"
+                onClick={handleAddObjectClick}
+                disabled={/* @ts-ignore */ loadingObjectLabels || /* @ts-ignore */ savingObjectLabels}
+                aria-label="Add object label"
+                title="Add a new object label"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+            </div>
+            {/* @ts-ignore */}
+            {/* show saving indicator */ loadingObjectLabels && <span className="config-section-status">Loading object labels…</span>}
+          </header>
+          {/* @ts-ignore */}
+          { /* @ts-ignore */ (/* @ts-ignore */ loadingObjectLabels) ? (
+            <div className="config-empty">Loading object labels…</div>
+          ) : (/* @ts-ignore */ (/* @ts-ignore */ (typeof objectOptions !== 'undefined' && (objectOptions as string[]).length === 0))) ? (
+            <div className="config-empty">No object labels are currently defined.</div>
+          ) : (
+            <div className="config-table-wrapper">
+              <table className="config-action-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col" className="config-col-operation">Operation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* @ts-ignore */}
+                  {(objectOptions as string[] | undefined)?.map((obj: string) => {
+                    const isEditing = editingObjectLabel === obj
+                    return (
+                      <tr key={obj}>
+                        <td className="config-col-name">
+                          {isEditing ? (
+                            <input
+                              ref={objectNameInputRef}
+                              className="config-label-input"
+                              value={editingObjectValue}
+                              onChange={e => setEditingObjectValue(e.target.value)}
+                              onBlur={async () => {
+                                // commit rename on blur
+                                await submitRenameObject()
+                              }}
+                              onKeyDown={async e => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  await submitRenameObject()
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault()
+                                  cancelRenameObject()
+                                }
+                              }}
+                              disabled={renamePendingObject}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              className="config-label-name-button"
+                              onClick={() => {
+                                if (/* @ts-ignore */ loadingObjectLabels || /* @ts-ignore */ savingObjectLabels) return
+                                setEditingObjectLabel(obj)
+                                setEditingObjectValue(obj)
+                              }}
+                              disabled={/* @ts-ignore */ loadingObjectLabels || /* @ts-ignore */ savingObjectLabels}
+                              title="Rename object"
+                            >
+                              {obj}
+                            </button>
+                          )}
+                        </td>
+                        <td className="config-col-operation">
+                          <button
+                            type="button"
+                            className="config-icon-button"
+                            aria-label={`Remove ${obj}`}
+                            onClick={() => {
+                              if (typeof onRemoveObject === 'function') {
+                                // @ts-ignore
+                                onRemoveObject(obj)
+                              }
+                            }}
+                            disabled={/* @ts-ignore */ loadingObjectLabels || /* @ts-ignore */ savingObjectLabels || ((objectOptions as string[] | undefined)?.length ?? 0) <= 1}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                              <path d="M10 11v6" />
+                              <path d="M14 11v6" />
+                              <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+                            </svg>
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          </section>
+        )}
       </div>
     {activeLabel &&
       createPortal(

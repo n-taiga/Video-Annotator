@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
-import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation, fetchActionLabels, updateActionLabels } from './api'
+import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation, fetchActionLabels, updateActionLabels, fetchObjectLabels, updateObjectLabels } from './api'
 import type { ActionLabelDictionary } from './api'
 import LabelTimeline from './components/LabelTimeline'
 import VideoPanel from './components/VideoPanel'
@@ -145,6 +145,7 @@ export default function App() {
   const selectionMenuHideTimerRef = useRef<number | null>(null)
   const hoverTooltipTimerRef = useRef<number | null>(null)
   const configMenuRef = useRef<HTMLDivElement | null>(null)
+  const customSelectRef = useRef<HTMLDivElement | null>(null)
 
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
@@ -173,6 +174,13 @@ export default function App() {
   const [loadingActionLabels, setLoadingActionLabels] = useState(true)
   const [savingActionLabels, setSavingActionLabels] = useState(false)
   const [actionLabelError, setActionLabelError] = useState<string | null>(null)
+  const [objectOptions, setObjectOptions] = useState<string[]>([])
+  const [loadingObjectLabels, setLoadingObjectLabels] = useState(true)
+  const [savingObjectLabels, setSavingObjectLabels] = useState(false)
+  const [objectLabelError, setObjectLabelError] = useState<string | null>(null)
+  const [newObjectName, setNewObjectName] = useState('')
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [addingNewObject, setAddingNewObject] = useState(false)
 
   const applyActionLabelDictionary = useCallback((dictionary: ActionLabelDictionary) => {
     let sanitized = cloneLabelDictionary(dictionary)
@@ -205,6 +213,26 @@ export default function App() {
     }
   }, [applyActionLabelDictionary])
 
+  const loadObjectLabels = useCallback(async () => {
+    setLoadingObjectLabels(true)
+    try {
+      const remote = await fetchObjectLabels()
+      const opts = Object.keys(remote)
+      setObjectOptions(opts)
+      // Ensure current objectName remains if present, else pick first
+      setObjectName(prev => (opts.includes(prev) ? prev : opts[0] ?? prev))
+      setObjectLabelError(null)
+      return remote
+    } catch (err) {
+      console.error('Failed to load object labels', err)
+      const message = err instanceof Error ? err.message : 'Failed to load object labels.'
+      setObjectLabelError(message)
+      throw err
+    } finally {
+      setLoadingObjectLabels(false)
+    }
+  }, [])
+
   const persistActionLabels = useCallback(async (next: ActionLabelDictionary, options?: { silent?: boolean }) => {
     const silent = Boolean(options?.silent)
     if (!silent) setSavingActionLabels(true)
@@ -229,7 +257,22 @@ export default function App() {
 
   useEffect(() => {
     void loadActionLabels().catch(() => undefined)
+    void loadObjectLabels().catch(() => undefined)
   }, [loadActionLabels])
+
+  // Close dropdown when clicking outside custom select
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      if (!dropdownOpen) return
+      const node = customSelectRef.current
+      if (!node) return
+      if (e.target instanceof Node && node.contains(e.target)) return
+      setDropdownOpen(false)
+      setAddingNewObject(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [dropdownOpen])
 
   useEffect(() => {
     setSaveStatus({ status: 'idle' })
@@ -257,21 +300,25 @@ export default function App() {
         : undefined
   const interactionCount = interactions.length
 
-  const activeInteraction = useMemo(() => {
-    if (!Number.isFinite(currentTime)) return null
-    let candidate: Interaction | null = null
-    for (const interaction of interactions) {
-      if (interaction.start_time <= currentTime && currentTime <= interaction.end_time) {
-        if (!candidate || interaction.start_time > candidate.start_time || (interaction.start_time === candidate.start_time && interaction.end_time < candidate.end_time)) {
-          candidate = interaction
-        }
-      }
-    }
-    return candidate
+  // Collect all interactions that overlap the current time so VideoPanel can show multiple labels
+  const activeInteractions = useMemo(() => {
+    if (!Number.isFinite(currentTime)) return [] as Interaction[]
+    return interactions.filter(interaction => interaction.start_time <= currentTime && currentTime <= interaction.end_time)
   }, [interactions, currentTime])
 
-  const activeTimelineLabel = activeInteraction?.action_label ?? ''
-  const activeTimelineColor = activeTimelineLabel ? getLabelColor(labelColors, activeTimelineLabel, '#94A3B8') : '#94A3B8'
+  const activeTimelineLabels = useMemo(() => {
+    // Keep label order stable and unique
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const it of activeInteractions) {
+      const label = it.action_label
+      if (!seen.has(label)) {
+        seen.add(label)
+        out.push(label)
+      }
+    }
+    return out
+  }, [activeInteractions])
 
   useEffect(() => {
     currentTimeRef.current = currentTime
@@ -964,6 +1011,30 @@ export default function App() {
     }
   }, [actions, labelColors, loadActionLabels, loadingActionLabels, normalizeHexColor, persistActionLabels, savingActionLabels])
 
+  const handleChangeObjectColor = useCallback(async (objectNameParam: string, colorValue: string) => {
+    const trimmed = objectNameParam.trim()
+    if (!trimmed) return
+    if (loadingObjectLabels || savingObjectLabels) return
+    const normalized = normalizeHexColor(colorValue)
+    // optimistic update: update objectOptions colors not stored locally here; persist via API
+    const nextDictionary: ActionLabelDictionary = {}
+    objectOptions.forEach(o => {
+      nextDictionary[o] = '#94A3B8'
+    })
+    nextDictionary[trimmed] = normalized
+    try {
+      setSavingObjectLabels(true)
+      await updateObjectLabels(nextDictionary)
+      setObjectLabelError(null)
+    } catch (err) {
+      console.error('Failed to change object label color', err)
+      setObjectLabelError(err instanceof Error ? err.message : 'Failed to change object label color')
+      void loadObjectLabels().catch(() => undefined)
+    } finally {
+      setSavingObjectLabels(false)
+    }
+  }, [loadingObjectLabels, objectOptions, normalizeHexColor, savingObjectLabels])
+
   const handleAddAction = useCallback(async (): Promise<string | null> => {
     if (loadingActionLabels || savingActionLabels) return null
     const baseName = 'None'
@@ -1009,6 +1080,51 @@ export default function App() {
       return null
     }
   }, [actions, labelColors, loadingActionLabels, persistActionLabels, savingActionLabels])
+
+  // Add a new object label. If rawName is provided, try to use it (if not duplicate).
+  const handleAddObject = useCallback(async (rawName?: string): Promise<string | null> => {
+    if (loadingObjectLabels || savingObjectLabels) return null
+    const baseName = 'Object'
+    const ordered = [...objectOptions]
+    let candidate: string
+    const provided = typeof rawName === 'string' ? rawName.trim() : ''
+    if (provided) {
+      if (ordered.includes(provided)) {
+        // already exists
+        return provided
+      }
+      candidate = provided
+    } else {
+      candidate = baseName
+      let suffix = 2
+      while (ordered.includes(candidate)) {
+        candidate = `${baseName} ${suffix}`
+        suffix += 1
+      }
+    }
+
+    const prev = [...objectOptions]
+    const nextOrder = [...ordered, candidate]
+    setObjectOptions(nextOrder)
+    try {
+      setSavingObjectLabels(true)
+      const nextDictionary: ActionLabelDictionary = {}
+      nextOrder.forEach(label => {
+        nextDictionary[label] = '#94A3B8'
+      })
+      await updateObjectLabels(nextDictionary)
+      setObjectLabelError(null)
+      setObjectName(candidate)
+      return candidate
+    } catch (err) {
+      console.error('Failed to add object label', err)
+      setObjectOptions(prev)
+      setObjectLabelError(err instanceof Error ? err.message : 'Failed to add object label')
+      return null
+    } finally {
+      setSavingObjectLabels(false)
+    }
+  }, [loadingObjectLabels, objectOptions, savingObjectLabels])
 
   const handleRenameAction = useCallback(async (previousName: string, rawNextName: string): Promise<boolean> => {
     if (loadingActionLabels || savingActionLabels) return false
@@ -1090,6 +1206,56 @@ export default function App() {
       return false
     }
   }, [actions, hoverInfo, interactions, labelColors, loadingActionLabels, persistActionLabels, redoStack, savingActionLabels, selectedAction, selectionMenuAction, undoStack])
+
+  const handleRenameObject = useCallback(async (previousName: string, rawNextName: string): Promise<boolean> => {
+    if (loadingObjectLabels || savingObjectLabels) return false
+    const trimmed = rawNextName.trim()
+    const current = previousName.trim()
+    if (!current) return false
+    if (!trimmed) return false
+    if (trimmed === current) return true
+    if (!objectOptions.includes(current)) return false
+    if (objectOptions.includes(trimmed)) return false
+
+    const prev = [...objectOptions]
+    const nextOrder = prev.map(o => (o === current ? trimmed : o))
+    setObjectOptions(nextOrder)
+    try {
+      const nextDictionary: ActionLabelDictionary = {}
+      nextOrder.forEach(label => { nextDictionary[label] = '#94A3B8' })
+      await updateObjectLabels(nextDictionary)
+      setObjectLabelError(null)
+      if (objectName === current) setObjectName(trimmed)
+      return true
+    } catch (err) {
+      console.error('Failed to rename object label', err)
+      setObjectOptions(prev)
+      setObjectLabelError(err instanceof Error ? err.message : 'Failed to rename object label')
+      return false
+    }
+  }, [loadingObjectLabels, objectName, objectOptions, savingObjectLabels])
+
+  const handleRemoveObject = useCallback(async (name: string) => {
+    if (loadingObjectLabels || savingObjectLabels) return
+    if (!objectOptions.includes(name)) return
+    if (objectOptions.length <= 1) {
+      setObjectLabelError('At least one object label must remain.')
+      return
+    }
+    const prev = [...objectOptions]
+    const next = prev.filter(o => o !== name)
+    try {
+      const nextDictionary: ActionLabelDictionary = {}
+      next.forEach(label => { nextDictionary[label] = '#94A3B8' })
+      await updateObjectLabels(nextDictionary)
+      setObjectOptions(next)
+      setObjectLabelError(null)
+      if (objectName === name) setObjectName(next[0] ?? '')
+    } catch (err) {
+      console.error('Failed to remove object label', err)
+      setObjectLabelError(err instanceof Error ? err.message : 'Failed to remove object label')
+    }
+  }, [loadingObjectLabels, objectName, objectOptions, savingObjectLabels])
 
   async function handleRemoveAction(actionName: string) {
     const trimmed = actionName.trim()
@@ -1468,6 +1634,25 @@ export default function App() {
             saving={savingActionLabels}
             error={actionLabelError}
             onRetry={reloadActionLabels}
+            // object label management
+            // @ts-ignore - additional props consumed by extended panel
+            objectOptions={objectOptions}
+            // @ts-ignore
+            onRemoveObject={handleRemoveObject}
+            // @ts-ignore
+            onChangeObjectColor={handleChangeObjectColor}
+            // @ts-ignore
+            onAddObject={handleAddObject}
+            // @ts-ignore
+            onRenameObject={handleRenameObject}
+            // @ts-ignore
+            loadingObjectLabels={loadingObjectLabels}
+            // @ts-ignore
+            savingObjectLabels={savingObjectLabels}
+            // @ts-ignore
+            objectLabelError={objectLabelError}
+            // @ts-ignore
+            onRetryObject={loadObjectLabels}
           />
         </div>
       )}
@@ -1485,9 +1670,117 @@ export default function App() {
           <span>Environment</span>
           <input className="input" value={environment} onChange={e => setEnvironment(e.target.value)} />
         </label>
-        <label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span>Object</span>
-          <input className="input" value={objectName} onChange={e => setObjectName(e.target.value)} />
+          <div style={{ position: 'relative' }}>
+            {/* Custom dropdown: shows selected value, opens list on click. Uses outside-click handler to close. */}
+            <div className="custom-select" ref={customSelectRef}>
+              <button
+                type="button"
+                className="input custom-select-trigger"
+                onClick={() => setDropdownOpen(prev => !prev)}
+                aria-haspopup="listbox"
+                aria-expanded={dropdownOpen}
+              >
+                <span className="custom-select-value">{objectName || '—'}</span>
+                <span className="custom-select-caret">▾</span>
+              </button>
+              {dropdownOpen && (
+                <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                  {objectOptions.map(o => (
+                    <button
+                      key={o}
+                      type="button"
+                      className={`custom-select-option${o === objectName ? ' is-selected' : ''}`}
+                      onClick={() => {
+                        setObjectName(o)
+                        setDropdownOpen(false)
+                      }}
+                    >
+                      {o}
+                    </button>
+                  ))}
+                  {/* Add row */}
+                  {!addingNewObject && (
+                    <button
+                      type="button"
+                      className="custom-select-add"
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        // Ensure dropdown stays open and we enter add-mode immediately
+                        setAddingNewObject(true)
+                        setDropdownOpen(true)
+                        // focus will be handled by the input's autoFocus after render
+                      }}
+                    >
+                      + Add object
+                    </button>
+                  )}
+                  {addingNewObject && (
+                    <div className="custom-select-add-row">
+                      <input
+                        className="input"
+                        placeholder="New object"
+                        value={newObjectName}
+                        onChange={e => setNewObjectName(e.target.value)}
+                        onKeyDown={async e => {
+                          if (e.key === 'Enter') {
+                            const val = newObjectName.trim()
+                            if (!val) return
+                            const added = await handleAddObject(val)
+                            if (typeof added === 'string') {
+                              setNewObjectName('')
+                              setAddingNewObject(false)
+                              setDropdownOpen(false)
+                            }
+                          } else if (e.key === 'Escape') {
+                            setNewObjectName('')
+                            setAddingNewObject(false)
+                          }
+                        }}
+                        autoFocus
+                        onBlur={() => {
+                          // keep editing until Enter or explicit cancel via Escape; blur should close only if not adding
+                          // small timeout to allow click handlers to run
+                          setTimeout(() => {
+                            if (addingNewObject) return
+                            setDropdownOpen(false)
+                          }, 120)
+                        }}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={async () => {
+                            const val = newObjectName.trim()
+                            if (!val) return
+                            const added = await handleAddObject(val)
+                            if (typeof added === 'string') {
+                              setNewObjectName('')
+                              setAddingNewObject(false)
+                              setDropdownOpen(false)
+                            }
+                          }}
+                          disabled={loadingObjectLabels || savingObjectLabels}
+                        >Add</button>
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => {
+                            setNewObjectName('')
+                            setAddingNewObject(false)
+                          }}
+                        >Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </label>
       </div>
 
@@ -1521,8 +1814,8 @@ export default function App() {
             onToggleMute={() => setMuted(m => !m)}
             playbackRate={playbackRate}
             onPlaybackRateChange={setPlaybackRate}
-            activeLabel={activeTimelineLabel || undefined}
-            activeColor={activeTimelineLabel ? activeTimelineColor : undefined}
+            activeLabels={activeTimelineLabels.length > 0 ? activeTimelineLabels : undefined}
+            activeColors={activeTimelineLabels.length > 0 ? activeTimelineLabels.map(l => getLabelColor(labelColors, l, '#94A3B8')) : undefined}
           />
 
           <TimelineSection

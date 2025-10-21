@@ -44,6 +44,9 @@ DEFAULT_ACTION_LABELS: Dict[str, str] = {
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 ACTION_LABELS_PATH = Path(os.environ.get("ACTION_LABELS_PATH", _DEFAULT_DATA_DIR / "actionLabels.json")).resolve()
 ACTION_LABEL_LOCK = Lock()
+OBJECT_LABELS_PATH = Path(os.environ.get("OBJECT_LABELS_PATH", _DEFAULT_DATA_DIR / "objectLabels.json")).resolve()
+OBJECT_LABEL_LOCK = Lock()
+DEFAULT_OBJECT_COLOR = "#94A3B8"
 
 
 def _normalize_color(value: str) -> str:
@@ -119,6 +122,86 @@ def _save_action_labels(labels: Dict[str, str]) -> Dict[str, str]:
         except PermissionError as exc:
             raise HTTPException(status_code=500, detail=f"Cannot write action labels file: {ACTION_LABELS_PATH}") from exc
     return normalized
+
+
+def _ensure_object_label_file() -> None:
+    path = OBJECT_LABELS_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot create directory for object labels: {path.parent}") from exc
+    if path.exists():
+        return
+    try:
+        # create an empty list file by default; repository may include a starter file
+        path.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding='utf-8')
+    except PermissionError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot write object labels file: {path}") from exc
+
+
+def _load_object_labels() -> Dict[str, str]:
+    with OBJECT_LABEL_LOCK:
+        _ensure_object_label_file()
+        try:
+            data = json.loads(OBJECT_LABELS_PATH.read_text(encoding='utf-8'))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read object labels: {exc}") from exc
+        # Accept either a dict (name -> color) or a list of names (colorless storage)
+        if isinstance(data, dict):
+            try:
+                normalized = _normalize_action_labels(data, allow_empty=True)
+            except HTTPException:
+                # Corrupt dict -> reset to empty list
+                OBJECT_LABELS_PATH.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding='utf-8')
+                return {}
+            # Keep file as-is (dict) if it was a dict; but normalize values
+            if normalized != data:
+                OBJECT_LABELS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding='utf-8')
+            return normalized
+        if isinstance(data, list):
+            # Validate list of strings and convert to dict with default colors for frontend
+            result: Dict[str, str] = {}
+            for item in data:
+                if not isinstance(item, str):
+                    continue
+                name = item.strip()
+                if not name:
+                    continue
+                result[name] = DEFAULT_OBJECT_COLOR
+            return result
+        # Unknown content shape; reset to empty list
+        OBJECT_LABELS_PATH.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding='utf-8')
+        return {}
+
+
+def _save_object_labels(labels: Dict[str, str]) -> Dict[str, str]:
+    # Accept a dict of name->color, but persist only the names (colorless storage)
+    # Validate keys
+    names: List[str] = []
+    for key in labels.keys():
+        if not isinstance(key, str):
+            continue
+        name = key.strip()
+        if not name:
+            continue
+        names.append(name)
+    with OBJECT_LABEL_LOCK:
+        try:
+            OBJECT_LABELS_PATH.write_text(json.dumps(names, ensure_ascii=False, indent=2), encoding='utf-8')
+        except PermissionError as exc:
+            raise HTTPException(status_code=500, detail=f"Cannot write object labels file: {OBJECT_LABELS_PATH}") from exc
+    # Return a dict mapping names to provided colors (or default)
+    out: Dict[str, str] = {}
+    for name in names:
+        color = labels.get(name)
+        if isinstance(color, str):
+            try:
+                out[name] = _normalize_color(color)
+            except HTTPException:
+                out[name] = DEFAULT_OBJECT_COLOR
+        else:
+            out[name] = DEFAULT_OBJECT_COLOR
+    return out
 
 
 class ActionLabelPayload(BaseModel):
@@ -317,4 +400,16 @@ async def get_action_labels():
 @app.put('/config/action-labels')
 async def update_action_labels(payload: ActionLabelPayload):
     labels = _save_action_labels(payload.labels)
+    return {"labels": labels}
+
+
+@app.get('/config/object-labels')
+async def get_object_labels():
+    labels = _load_object_labels()
+    return {"labels": labels}
+
+
+@app.put('/config/object-labels')
+async def update_object_labels(payload: ActionLabelPayload):
+    labels = _save_object_labels(payload.labels)
     return {"labels": labels}
