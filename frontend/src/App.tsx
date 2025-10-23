@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
-import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation, fetchActionLabels, updateActionLabels, fetchObjectLabels, updateObjectLabels } from './api'
+import { fetchVideos, saveAnnotation, buildApiUrl, loadAnnotation, fetchActionLabels, updateActionLabels, fetchObjectLabels, updateObjectLabels, fetchMetadata, fetchMetadataItem } from './api'
 import type { ActionLabelDictionary } from './api'
 import LabelTimeline from './components/LabelTimeline'
 import VideoPanel from './components/VideoPanel'
@@ -115,8 +115,12 @@ export default function App() {
   const initialLabelDictionary = useMemo(() => cloneLabelDictionary(), [])
   const initialActionList = useMemo(() => Object.keys(initialLabelDictionary), [initialLabelDictionary])
 
-  const [scenarioId, setScenarioId] = useState('scene_001')
-  const [videoId, setVideoId] = useState('vid_001')
+  const [scenarioId, setScenarioId] = useState('')
+  // If the user explicitly picks the top '-' option (no scenario), set this
+  // flag so automatic inference (from loaded annotations / video_path) won't
+  // overwrite the user's explicit choice.
+  const [userClearedScenario, setUserClearedScenario] = useState(false)
+  const [videoId, setVideoId] = useState('')
   const [taskLabel, setTaskLabel] = useState('make coffee')
   const [environment, setEnvironment] = useState('kitchen')
   const [objectName, setObjectName] = useState('cup')
@@ -124,7 +128,16 @@ export default function App() {
   const [actions, setActions] = useState<string[]>(initialActionList)
   const [interactions, setInteractions] = useState<Interaction[]>([])
   const [videoOptions, setVideoOptions] = useState<string[]>([])
-  const [selectedVideoFile, setSelectedVideoFile] = useState('vid_001.mp4')
+  const [metadataOptions, setMetadataOptions] = useState<string[]>([])
+  const [restrictToMetadata, setRestrictToMetadata] = useState(false)
+  const scenarioSelectRef = useRef<HTMLDivElement | null>(null)
+  const [scenarioDropdownOpen, setScenarioDropdownOpen] = useState(false)
+  const videoHeaderSelectRef = useRef<HTMLDivElement | null>(null)
+  const [videoHeaderDropdownOpen, setVideoHeaderDropdownOpen] = useState(false)
+  const videoSideSelectRef = useRef<HTMLDivElement | null>(null)
+  const [videoSideDropdownOpen, setVideoSideDropdownOpen] = useState(false)
+  const [selectedVideoFile, setSelectedVideoFile] = useState('')
+  const [referenceVideoFile, setReferenceVideoFile] = useState('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ open: false })
   const [selectionMenuAction, setSelectionMenuAction] = useState(initialActionList[0] ?? '')
   const interactionMenuRef = useRef<HTMLDivElement | null>(null)
@@ -146,6 +159,19 @@ export default function App() {
   const hoverTooltipTimerRef = useRef<number | null>(null)
   const configMenuRef = useRef<HTMLDivElement | null>(null)
   const customSelectRef = useRef<HTMLDivElement | null>(null)
+
+  // Task and Environment are free text inputs (no dropdown)
+
+  // Timing constants for the selection (label) menu
+  const SELECTION_MENU_OPEN_DELAY = 500
+  const SELECTION_MENU_HIDE_DELAY = 1000
+
+  const clearSelectionMenuHideTimer = () => {
+    if (selectionMenuHideTimerRef.current !== null) {
+      window.clearTimeout(selectionMenuHideTimerRef.current)
+      selectionMenuHideTimerRef.current = null
+    }
+  }
 
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
@@ -258,21 +284,97 @@ export default function App() {
   useEffect(() => {
     void loadActionLabels().catch(() => undefined)
     void loadObjectLabels().catch(() => undefined)
+    // load metadata scenario list
+    void fetchMetadata()
+      .then(list => {
+        if (Array.isArray(list) && list.length > 0) {
+          setMetadataOptions(list)
+          // If the user explicitly cleared the scenario (picked '-'), do not
+          // overwrite their choice during initial metadata load. Otherwise,
+          // if current scenarioId not in list, set to first.
+          setScenarioId(prev => {
+            if (userClearedScenario) return prev
+            return list.includes(prev) ? prev : list[0]
+          })
+        }
+      })
+      .catch(() => undefined)
   }, [loadActionLabels])
+
+  // When scenario changes, fetch its metadata and set videoOptions to its target_videos
+  useEffect(() => {
+    if (!scenarioId) return
+    let cancelled = false
+    void fetchMetadataItem(scenarioId)
+      .then((meta: any) => {
+        if (cancelled) return
+        if (meta && Array.isArray(meta.target_videos) && meta.target_videos.length > 0) {
+          // metadata paths are relative to data directory; keep them as-is but strip leading slash
+          const opts = meta.target_videos.map((p: string) => String(p).replace(/^\//, ''))
+          setVideoOptions(opts)
+          setSelectedVideoFile(prev => (opts.includes(prev) ? prev : opts[0]))
+          // store reference video (if provided) as a relative path
+          if (typeof meta.reference_video === 'string' && meta.reference_video.trim()) {
+            setReferenceVideoFile(String(meta.reference_video).replace(/^\//, ''))
+          } else {
+            setReferenceVideoFile('')
+          }
+          // Prevent the global /videos fetch from overwriting this metadata-driven list
+          setRestrictToMetadata(true)
+        } else {
+          // fallback to server-wide videos
+          setReferenceVideoFile('')
+          setRestrictToMetadata(false)
+          void fetchVideos().then(files => setVideoOptions(files)).catch(() => {})
+        }
+      })
+      .catch(() => {
+        setRestrictToMetadata(false)
+        void fetchVideos().then(files => setVideoOptions(files)).catch(() => {})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [scenarioId])
 
   // Close dropdown when clicking outside custom select
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
-      if (!dropdownOpen) return
-      const node = customSelectRef.current
-      if (!node) return
-      if (e.target instanceof Node && node.contains(e.target)) return
-      setDropdownOpen(false)
-      setAddingNewObject(false)
+      // object dropdown
+      if (dropdownOpen) {
+        const node = customSelectRef.current
+        if (!node || !(e.target instanceof Node) || !node.contains(e.target)) {
+          setDropdownOpen(false)
+          setAddingNewObject(false)
+        }
+      }
+      // scenario dropdown
+      if (scenarioDropdownOpen) {
+        const sNode = scenarioSelectRef.current
+        if (!sNode || !(e.target instanceof Node) || !sNode.contains(e.target)) {
+          setScenarioDropdownOpen(false)
+          setRestrictToMetadata(false)
+          setReferenceVideoFile('')
+        }
+      }
+      // header video dropdown
+      if (videoHeaderDropdownOpen) {
+        const hNode = videoHeaderSelectRef.current
+        if (!hNode || !(e.target instanceof Node) || !hNode.contains(e.target)) {
+          setVideoHeaderDropdownOpen(false)
+        }
+      }
+      // side video dropdown
+      if (videoSideDropdownOpen) {
+        const sNode = videoSideSelectRef.current
+        if (!sNode || !(e.target instanceof Node) || !sNode.contains(e.target)) {
+          setVideoSideDropdownOpen(false)
+        }
+      }
     }
     document.addEventListener('mousedown', onDocMouseDown)
     return () => document.removeEventListener('mousedown', onDocMouseDown)
-  }, [dropdownOpen])
+  }, [dropdownOpen, scenarioDropdownOpen, videoHeaderDropdownOpen, videoSideDropdownOpen])
 
   useEffect(() => {
     setSaveStatus({ status: 'idle' })
@@ -402,20 +504,18 @@ export default function App() {
         hoverTimerRef.current = null
         if (contextMenu.open && contextMenu.type === 'selection') return
         openHoverMenu()
-      }, 500)
+      }, SELECTION_MENU_OPEN_DELAY)
     }
 
     const handlePointerLeave = () => {
       clearHoverTimer()
-      if (selectionMenuHideTimerRef.current !== null) {
-        window.clearTimeout(selectionMenuHideTimerRef.current)
-      }
+      clearSelectionMenuHideTimer()
       selectionMenuHideTimerRef.current = window.setTimeout(() => {
         if (contextMenu.open && contextMenu.type === 'selection') {
           closeContextMenu()
         }
         selectionMenuHideTimerRef.current = null
-      }, 200)
+      }, SELECTION_MENU_HIDE_DELAY)
     }
 
     const handlePointerDown = () => {
@@ -445,6 +545,8 @@ export default function App() {
     let cancelled = false
 
     async function loadVideos() {
+      // If metadata has already provided a restricted list, do not overwrite it
+      if (restrictToMetadata) return
       try {
         const files = await fetchVideos()
         if (cancelled) return
@@ -452,7 +554,9 @@ export default function App() {
           setVideoOptions(selectedVideoFile ? [selectedVideoFile] : [])
           return
         }
-        setVideoOptions(files)
+        // Ensure uniqueness and stable ordering
+        const uniq = Array.from(new Set(files))
+        setVideoOptions(uniq)
         if (!files.includes(selectedVideoFile)) {
           setSelectedVideoFile(files[0])
         }
@@ -467,7 +571,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [selectedVideoFile])
+  }, [selectedVideoFile, restrictToMetadata])
 
   useEffect(() => {
     if (!selectedVideoFile) return
@@ -551,8 +655,10 @@ export default function App() {
               }
             })
 
-          // Populate form fields if present/derivable
-          if (scenarioFromPath) setScenarioId(scenarioFromPath)
+          // Populate form fields if present/derivable. If the user explicitly
+          // cleared the scenario (picked the '-' top option), do not overwrite
+          // their choice with inferred values from the annotation's video_path.
+          if (scenarioFromPath && !userClearedScenario) setScenarioId(scenarioFromPath)
           setVideoId(videoIdFromPath)
           if (typeof first.task_label === 'string') setTaskLabel(first.task_label)
           if (typeof first.environment === 'string') setEnvironment(first.environment)
@@ -562,8 +668,9 @@ export default function App() {
           return
         }
         if (cancelled || !data) return
-        // Populate form fields if present
-        if (typeof data.scenario_id === 'string') setScenarioId(data.scenario_id)
+  // Populate form fields if present. Do not overwrite an explicitly
+  // cleared scenario selection by the user (userClearedScenario).
+  if (typeof data.scenario_id === 'string' && !userClearedScenario) setScenarioId(data.scenario_id)
         if (typeof data.video_id === 'string') setVideoId(data.video_id)
         if (typeof data.task_label === 'string') setTaskLabel(data.task_label)
         if (typeof data.environment === 'string') setEnvironment(data.environment)
@@ -1460,16 +1567,39 @@ export default function App() {
             </svg>
           </button>
           {videoOptions.length > 0 && (
-            <label className="video-picker">
+            <div style={{ position: 'relative' }} className="video-picker">
               <span>Video</span>
-              <select value={selectedVideoFile} onChange={e => setSelectedVideoFile(e.target.value)}>
-                {videoOptions.map(file => (
-                  <option key={file} value={file}>
-                    {file}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <div className="custom-select custom-select--video-header" ref={videoHeaderSelectRef}>
+                <button
+                  type="button"
+                  className="input custom-select-trigger"
+                  onClick={() => setVideoHeaderDropdownOpen(prev => !prev)}
+                  aria-haspopup="listbox"
+                  aria-expanded={videoHeaderDropdownOpen}
+                >
+                  <span className="custom-select-value">{selectedVideoFile ? String(selectedVideoFile).split('/').pop() : '—'}</span>
+                  <span className="custom-select-caret">▾</span>
+                </button>
+                {videoHeaderDropdownOpen && (
+                  <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                    {videoOptions.map(file => (
+                      <button
+                        key={file}
+                        type="button"
+                        className={`custom-select-option${file === selectedVideoFile ? ' is-selected' : ''}`}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => {
+                          setSelectedVideoFile(file)
+                          setVideoHeaderDropdownOpen(false)
+                        }}
+                      >
+                        {String(file).split('/').pop()}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
 
@@ -1544,16 +1674,39 @@ export default function App() {
           </div>
 
           {videoOptions.length > 0 && (
-            <label className="video-picker">
+            <div style={{ position: 'relative' }} className="video-picker">
               <span>Video</span>
-              <select value={selectedVideoFile} onChange={e => setSelectedVideoFile(e.target.value)}>
-                {videoOptions.map(file => (
-                  <option key={file} value={file}>
-                    {file}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <div className="custom-select custom-select--video-side" ref={videoSideSelectRef}>
+                <button
+                  type="button"
+                  className="input custom-select-trigger"
+                  onClick={() => setVideoSideDropdownOpen(prev => !prev)}
+                  aria-haspopup="listbox"
+                  aria-expanded={videoSideDropdownOpen}
+                >
+                  <span className="custom-select-value">{selectedVideoFile ? String(selectedVideoFile).split('/').pop() : '—'}</span>
+                  <span className="custom-select-caret">▾</span>
+                </button>
+                {videoSideDropdownOpen && (
+                  <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                    {videoOptions.map(file => (
+                      <button
+                        key={file}
+                        type="button"
+                        className={`custom-select-option${file === selectedVideoFile ? ' is-selected' : ''}`}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => {
+                          setSelectedVideoFile(file)
+                          setVideoSideDropdownOpen(false)
+                        }}
+                      >
+                        {String(file).split('/').pop()}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           <div className="side-menu-section">
@@ -1563,6 +1716,12 @@ export default function App() {
                 <dt className="side-menu-meta-label">Filename</dt>
                 <dd className="side-menu-meta-value">{selectedVideoFile || '–'}</dd>
               </div>
+              {referenceVideoFile && (
+                <div className="side-menu-meta-row">
+                  <dt className="side-menu-meta-label">Reference</dt>
+                  <dd className="side-menu-meta-value">{referenceVideoFile}</dd>
+                </div>
+              )}
               <div className="side-menu-meta-row">
                 <dt className="side-menu-meta-label">Duration</dt>
                 <dd className="side-menu-meta-value">
@@ -1601,6 +1760,20 @@ export default function App() {
               </div>
             </dl>
           </div>
+              {referenceVideoFile && (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => {
+                      if (!referenceVideoFile) return
+                      setSelectedVideoFile(referenceVideoFile)
+                    }}
+                  >
+                    Open reference
+                  </button>
+                </div>
+              )}
         </div>
       </SideMenu>
 
@@ -1658,23 +1831,77 @@ export default function App() {
       )}
 
       <div className="action-form">
-        <label>
-          <span>Scenario</span>
-          <input className="input" value={scenarioId} onChange={e => setScenarioId(e.target.value)} />
-        </label>
-        <label>
-          <span>Task</span>
-          <input className="input" value={taskLabel} onChange={e => setTaskLabel(e.target.value)} />
-        </label>
-        <label>
-          <span>Environment</span>
-          <input className="input" value={environment} onChange={e => setEnvironment(e.target.value)} />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span>Object</span>
+            <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="field-label">Scenario</label>
+          <div style={{ position: 'relative' }}>
+            <div className="custom-select custom-select--scenario" ref={scenarioSelectRef}>
+              <button
+                type="button"
+                className="input custom-select-trigger"
+                onClick={() => setScenarioDropdownOpen(prev => !prev)}
+                aria-haspopup="listbox"
+                aria-expanded={scenarioDropdownOpen}
+              >
+                <span className="custom-select-value">{scenarioId || '—'}</span>
+                <span className="custom-select-caret">▾</span>
+              </button>
+              {scenarioDropdownOpen && (
+                <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                  {metadataOptions.length > 0 ? (
+                    <>
+                      <button
+                        key="__none__"
+                        type="button"
+                        className={`custom-select-option${scenarioId === '' ? ' is-selected' : ''}`}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => {
+                          setScenarioId('')
+                          setUserClearedScenario(true)
+                          setRestrictToMetadata(false)
+                          void fetchVideos()
+                            .then(list => {
+                              if (Array.isArray(list)) {
+                                setVideoOptions(list)
+                                setSelectedVideoFile(prev => (list.includes(prev) ? prev : list[0] ?? ''))
+                              } else {
+                                setVideoOptions([])
+                              }
+                            })
+                            .catch(() => {})
+                          setScenarioDropdownOpen(false)
+                        }}
+                      >
+                        -
+                      </button>
+                      {metadataOptions.map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          className={`custom-select-option${m === scenarioId ? ' is-selected' : ''}`}
+                          onMouseDown={e => e.stopPropagation()}
+                          onClick={() => {
+                            setScenarioId(m)
+                            setUserClearedScenario(false)
+                            setScenarioDropdownOpen(false)
+                          }}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="custom-select-empty" style={{ padding: 8 }}>No scenarios</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+            <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="field-label">Object</label>
           <div style={{ position: 'relative' }}>
             {/* Custom dropdown: shows selected value, opens list on click. Uses outside-click handler to close. */}
-            <div className="custom-select" ref={customSelectRef}>
+            <div className="custom-select custom-select--object" ref={customSelectRef}>
               <button
                 type="button"
                 className="input custom-select-trigger"
@@ -1692,6 +1919,7 @@ export default function App() {
                       key={o}
                       type="button"
                       className={`custom-select-option${o === objectName ? ' is-selected' : ''}`}
+                      onMouseDown={e => e.stopPropagation()}
                       onClick={() => {
                         setObjectName(o)
                         setDropdownOpen(false)
@@ -1781,6 +2009,17 @@ export default function App() {
               )}
             </div>
           </div>
+        </div>
+        {/* Environment: free text input */}
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span>Environment</span>
+          <input className="input" value={environment} onChange={e => setEnvironment(e.target.value)} />
+        </label>
+
+        {/* Task: free text input */}
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span>Task</span>
+          <input className="input" value={taskLabel} onChange={e => setTaskLabel(e.target.value)} />
         </label>
       </div>
 
@@ -1884,19 +2123,14 @@ export default function App() {
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
           onMouseEnter={() => {
-            if (selectionMenuHideTimerRef.current !== null) {
-              window.clearTimeout(selectionMenuHideTimerRef.current)
-              selectionMenuHideTimerRef.current = null
-            }
+            clearSelectionMenuHideTimer()
           }}
           onMouseLeave={() => {
-            if (selectionMenuHideTimerRef.current !== null) {
-              window.clearTimeout(selectionMenuHideTimerRef.current)
-            }
+            clearSelectionMenuHideTimer()
             selectionMenuHideTimerRef.current = window.setTimeout(() => {
               if (contextMenu.open && contextMenu.type === 'selection') closeContextMenu()
               selectionMenuHideTimerRef.current = null
-            }, 500)
+            }, SELECTION_MENU_HIDE_DELAY)
           }}
         >
           <div className="context-menu-title">Label</div>

@@ -1,7 +1,7 @@
 frontend/node_modules/
 frontend/dist/
-node_modules/
 data/annotations
+data/metadata
 data/videos
 __pycache__/
 *.pyc

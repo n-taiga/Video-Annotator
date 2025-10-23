@@ -417,7 +417,12 @@ body {
 /* Custom select used in the action form for Object selection */
 .custom-select {
   display: inline-block;
-  min-width: 330px;
+  /* Reduce default min width so the select doesn't unintentionally cover nearby label text.
+     Keep a reasonable max-width to avoid overly wide controls on large screens. */
+  /* CSS variables allow per-dropdown overrides (see modifier classes below). */
+  min-width: var(--dropdown-trigger-min-width, 180px);
+  max-width: var(--dropdown-trigger-max-width, 420px);
+  width: auto;
 }
 .custom-select .custom-select-trigger {
   display: flex;
@@ -433,8 +438,9 @@ body {
 .custom-select-list {
   position: absolute;
   margin-top: 6px;
+  /* Anchor to the left of the trigger and don't stretch to the parent's right edge */
   left: 0;
-  right: 0;
+  right: auto;
   background: rgba(34, 36, 39, 0.98);
   border: 1px solid rgba(148,163,184,0.18);
   border-radius: 10px;
@@ -444,9 +450,23 @@ body {
   flex-direction: column;
   gap: 6px;
   padding: 8px;
+  /* Control dropdown list width independently of the trigger via CSS variables.
+     --dropdown-list-min-width and --dropdown-list-max-width may be set on
+     the parent .custom-select (or modifier) to override defaults. */
+  min-width: var(--dropdown-list-min-width, 300px);
+  max-width: var(--dropdown-list-max-width, 420px);
+  width: auto; /* let intrinsic content size / min/max decide */
+  box-sizing: border-box;
   max-height: 40vh;
   overflow: auto;
 }
+
+/* Modifier classes provide sensible per-dropdown defaults. These can be further
+   customized by adding inline style or additional modifier rules. */
+.custom-select--scenario { --dropdown-trigger-min-width: 140px; --dropdown-list-min-width: 180px; }
+.custom-select--object { --dropdown-trigger-min-width: 140px; --dropdown-list-min-width: 200px; }
+.custom-select--video-header { --dropdown-trigger-min-width: 180px; --dropdown-list-min-width: 190px; }
+.custom-select--video-side { --dropdown-trigger-min-width: 200px; --dropdown-list-min-width: 260px; }
 .custom-select-option {
   text-align: left;
   padding: 8px 10px;

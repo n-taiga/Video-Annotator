@@ -225,9 +225,63 @@ def list_video_files(directory: Path) -> List[str]:
     return sorted(files)
 
 def _annotation_path_from_filename(video_filename: str) -> Path:
+    """Map a provided video filename or id to an annotation JSON path.
+
+    Behavior:
+    - Prefer the direct candidate file DEFAULT_ANNOTATION_DIR/<stem>.json if it exists.
+    - If not found, scan DEFAULT_ANNOTATION_DIR for any JSON whose stem matches
+      the requested stem (case-insensitive) or ends with the requested stem
+      (case-insensitive). Return the first match found.
+    - If nothing is found, return the default candidate path (caller will decide
+      how to handle missing files).
+    """
     safe_name = Path(video_filename).name
+    # Derive stem (if input had no suffix, keep as-is)
     stem = Path(safe_name).stem if Path(safe_name).suffix else safe_name
-    return DEFAULT_ANNOTATION_DIR / f"{stem}.json"
+
+    candidate = DEFAULT_ANNOTATION_DIR / f"{stem}.json"
+    # If the exact candidate exists, return it.
+    try:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    except Exception:
+        # If there's an OS error checking existence, fall through to scanning
+        pass
+
+    # Fallback: scan the annotation directory for a matching file
+    try:
+        if DEFAULT_ANNOTATION_DIR.exists() and DEFAULT_ANNOTATION_DIR.is_dir():
+            lower_stem = stem.lower()
+            for item in DEFAULT_ANNOTATION_DIR.iterdir():
+                if not item.is_file():
+                    continue
+                if item.suffix.lower() != '.json':
+                    continue
+                item_stem = item.stem or ''
+                lower_item = item_stem.lower()
+                # Exact case-insensitive match
+                if lower_item == lower_stem:
+                    return item
+                # Suffix match (handles files that may include prefixes)
+                if lower_item.endswith(lower_stem):
+                    return item
+    except Exception:
+        # Any error scanning the directory is non-fatal here; return candidate below
+        pass
+
+    # Not found: return the canonical candidate path (may not exist)
+    return candidate
+
+
+def list_metadata_files(directory: Path) -> List[str]:
+    """Return metadata json filenames (without extension) under directory (non-recursive)."""
+    if not directory.exists() or not directory.is_dir():
+        return []
+    out: List[str] = []
+    for item in sorted(directory.iterdir()):
+        if item.is_file() and item.suffix.lower() == '.json':
+            out.append(item.stem)
+    return out
 
 
 def _ensure_directory(directory: Path) -> None:
@@ -245,6 +299,15 @@ def _resolve_video_path(filename: str) -> Path:
     rel = Path(filename)
     if rel.is_absolute():
         raise HTTPException(status_code=400, detail='Absolute paths are not allowed')
+    # Some metadata or clients include a leading "videos/" segment (e.g. "videos/scene_1_vid_004.mp4").
+    # The server's VIDEO_DIRECTORY already points to the videos folder (e.g. /data/videos),
+    # so strip a single leading 'videos' path segment if present to avoid constructing
+    # paths like /data/videos/videos/scene_1_vid_004.mp4 which do not exist.
+    parts = rel.parts
+    if parts and parts[0].lower() == 'videos':
+        # if only 'videos' was provided, keep name as-is; otherwise drop the first segment
+        rel = Path(*parts[1:]) if len(parts) > 1 else Path(rel.name)
+
     target = (base / rel).resolve()
     try:
         # Ensure target is within base directory
@@ -292,7 +355,7 @@ async def save_annotation(ann: Annotation):
         raise HTTPException(status_code=500, detail=f"Cannot write annotation file: {target_path}") from exc
     return {"status": "saved", "file": target_path.name}
 
-@app.get('/load/{video_name}')
+@app.get('/load/{video_name:path}')
 async def load_annotation(video_name: str):
     target_path = _annotation_path_from_filename(video_name)
     _ensure_directory(target_path.parent)
@@ -413,3 +476,31 @@ async def get_object_labels():
 async def update_object_labels(payload: ActionLabelPayload):
     labels = _save_object_labels(payload.labels)
     return {"labels": labels}
+
+
+@app.get('/metadata')
+async def get_metadata_list():
+    """Return a list of metadata file names (scenario ids) found under data/metadata."""
+    meta_dir = _DEFAULT_DATA_DIR / 'metadata'
+    files = list_metadata_files(meta_dir)
+    return {"metadata": files}
+
+
+@app.get('/metadata/{scenario_id}')
+async def get_metadata_item(scenario_id: str):
+    """Return the parsed JSON content of a metadata file named <scenario_id>.json under data/metadata."""
+    safe_name = Path(scenario_id).name
+    meta_dir = _DEFAULT_DATA_DIR / 'metadata'
+    meta_path = (meta_dir / f"{safe_name}.json").resolve()
+    try:
+        meta_path.relative_to(meta_dir.resolve())
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid metadata id')
+    if not meta_path.exists() or not meta_path.is_file():
+        raise HTTPException(status_code=404, detail='Metadata not found')
+    try:
+        text = meta_path.read_text(encoding='utf-8')
+        data = json.loads(text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'Failed to read metadata: {exc}') from exc
+    return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
