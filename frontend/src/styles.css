@@ -1018,6 +1018,34 @@ body {
   background: #022c1e;
 }
 
+/* Compact toggle variant used in the SideMenu for small settings like "Show Reference" */
+.side-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  font-size: 13px;
+  color: var(--muted);
+}
+.side-toggle .timeline-toggle-label {
+  color: #94a3b8;
+  font-size: 13px;
+}
+.side-toggle .toggle-slider {
+  width: 36px;
+  height: 18px;
+}
+.side-toggle .toggle-slider::before {
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+}
+.side-toggle .toggle-checkbox:focus + .toggle-slider {
+  box-shadow: 0 0 0 6px rgba(74, 222, 128, 0.08);
+}
+
 .timeline-actions {
   display: flex;
   gap: 10px;

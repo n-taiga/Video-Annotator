@@ -116,12 +116,9 @@ export default function App() {
   const initialActionList = useMemo(() => Object.keys(initialLabelDictionary), [initialLabelDictionary])
 
   const [scenarioId, setScenarioId] = useState('')
-  // If the user explicitly picks the top '-' option (no scenario), set this
-  // flag so automatic inference (from loaded annotations / video_path) won't
-  // overwrite the user's explicit choice.
   const [userClearedScenario, setUserClearedScenario] = useState(false)
   const [videoId, setVideoId] = useState('')
-  const [taskLabel, setTaskLabel] = useState('make coffee')
+  const [taskLabel, setTaskLabel] = useState('')
   const [environment, setEnvironment] = useState('kitchen')
   const [objectName, setObjectName] = useState('cup')
   const baseActionsRef = useRef<string[]>(initialActionList)
@@ -136,8 +133,12 @@ export default function App() {
   const [videoHeaderDropdownOpen, setVideoHeaderDropdownOpen] = useState(false)
   const videoSideSelectRef = useRef<HTMLDivElement | null>(null)
   const [videoSideDropdownOpen, setVideoSideDropdownOpen] = useState(false)
+  const userSelectedScenarioRef = useRef(false)
+  const userSelectedVideoRef = useRef(false)
   const [selectedVideoFile, setSelectedVideoFile] = useState('')
   const [referenceVideoFile, setReferenceVideoFile] = useState('')
+  const [showReference, setShowReference] = useState(true)
+  const [isSwapped, setIsSwapped] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ open: false })
   const [selectionMenuAction, setSelectionMenuAction] = useState(initialActionList[0] ?? '')
   const interactionMenuRef = useRef<HTMLDivElement | null>(null)
@@ -146,6 +147,15 @@ export default function App() {
   const mainVideoRef = useRef<HTMLVideoElement | null>(null)
   const leftVideoRef = useRef<HTMLVideoElement | null>(null)
   const rightVideoRef = useRef<HTMLVideoElement | null>(null)
+  const referenceVideoRef = useRef<HTMLVideoElement | null>(null)
+
+  // Picture-in-Picture overlay position state and drag helpers
+  const PIP_WIDTH = 320
+  const PIP_HEIGHT = 180
+  const [pipTop, setPipTop] = useState<number>(100)
+  const [pipRight, setPipRight] = useState<number>(12)
+  const pipMountedRef = useRef(false)
+  const pipDragRef = useRef<{ active: boolean; startX: number; startY: number; startTop: number; startRight: number }>({ active: false, startX: 0, startY: 0, startTop: 0, startRight: 0 })
 
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -294,7 +304,7 @@ export default function App() {
           // if current scenarioId not in list, set to first.
           setScenarioId(prev => {
             if (userClearedScenario) return prev
-            return list.includes(prev) ? prev : list[0]
+            return prev && list.includes(prev) ? prev : ''
           })
         }
       })
@@ -387,6 +397,9 @@ export default function App() {
       ? `${(dragRange.end - dragRange.start).toFixed(2)}s`
       : '-'
   const videoSource = selectedVideoFile ? buildApiUrl(`/video/${encodeURIComponent(selectedVideoFile)}`) : ''
+  const referenceVideoSource = referenceVideoFile ? buildApiUrl(`/video/${encodeURIComponent(referenceVideoFile)}`) : ''
+  const mainSrc = isSwapped ? referenceVideoSource : videoSource
+  const pipSrc = isSwapped ? videoSource : referenceVideoSource
   const durationDisplay = buildDurationDisplay(Number.isFinite(duration) && duration > 0 ? duration : null)
   const resolutionDisplay =
     videoDetails.width !== null && videoDetails.height !== null
@@ -575,12 +588,18 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedVideoFile) return
+    // Reset any swap when selecting a new main video
+    setIsSwapped(false)
     const newId = stripExtension(selectedVideoFile)
     setVideoId(prev => (prev === newId ? prev : newId))
     setInteractions([])
     setUndoStack([])
     setRedoStack([])
     setDragRange({ start: null, end: null })
+    // Clear task input when a new video is selected. It will be populated
+    // if a saved annotation supplies a task. This ensures that when no
+    // annotation exists for the selected video, the Task field remains empty.
+    setTaskLabel('')
     setCurrentTime(0)
     setDuration(0)
     const refs = [mainVideoRef.current, leftVideoRef.current, rightVideoRef.current]
@@ -599,6 +618,9 @@ export default function App() {
       try {
         if (!selectedVideoFile) return
         const base = stripExtension(selectedVideoFile)
+        // Capture whether the user explicitly selected the video so we can
+        // avoid overwriting their choice with annotation-inferred scenario.
+        const wasUserSelected = Boolean(userSelectedVideoRef.current)
         const data: any = await loadAnnotation(base)
         // Fallback: if the server returns array-form (new export format),
         // transform it into the legacy object shape the app expects.
@@ -658,21 +680,51 @@ export default function App() {
           // Populate form fields if present/derivable. If the user explicitly
           // cleared the scenario (picked the '-' top option), do not overwrite
           // their choice with inferred values from the annotation's video_path.
-          if (scenarioFromPath && !userClearedScenario) setScenarioId(scenarioFromPath)
-          setVideoId(videoIdFromPath)
-          if (typeof first.task_label === 'string') setTaskLabel(first.task_label)
+          // Also, if the user just selected a video from the UI, respect that
+          // choice and do not overwrite scenario/video here.
+          if (!wasUserSelected) {
+            // Only apply scenario inferred from annotation if the user did not
+            // explicitly clear/select a scenario AND the inferred scenario
+            // exists in the loaded metadata list (if any). If metadata list
+            // is empty (not yet loaded / no metadata files), allow applying
+            // the inferred scenario for backward compatibility.
+            const canApplyScenarioFromPath = Boolean(scenarioFromPath) && !userClearedScenario && !userSelectedScenarioRef.current && (metadataOptions.length === 0 || metadataOptions.includes(scenarioFromPath))
+            if (canApplyScenarioFromPath) setScenarioId(scenarioFromPath)
+            setVideoId(videoIdFromPath)
+          }
+          if (typeof first.task === 'string') setTaskLabel(first.task)
+          else setTaskLabel('')
           if (typeof first.environment === 'string') setEnvironment(first.environment)
           if (typeof first.object === 'string') setObjectName(first.object)
           if (uniqActions.length > 0) setActions(() => mergeActions(baseActionsRef.current, uniqActions))
           setInteractions(interactions)
+
+          userSelectedVideoRef.current = false
+          userSelectedScenarioRef.current = false
           return
         }
         if (cancelled || !data) return
   // Populate form fields if present. Do not overwrite an explicitly
-  // cleared scenario selection by the user (userClearedScenario).
-  if (typeof data.scenario_id === 'string' && !userClearedScenario) setScenarioId(data.scenario_id)
-        if (typeof data.video_id === 'string') setVideoId(data.video_id)
-        if (typeof data.task_label === 'string') setTaskLabel(data.task_label)
+  // cleared scenario selection by the user (userClearedScenario). Also
+  // if the user explicitly selected the video (wasUserSelected), do not
+  // overwrite their choice.
+  if (typeof data.scenario_id === 'string') {
+          // Only set scenario from loaded annotation when it's allowed by
+          // user state and when it matches known metadata (or metadata
+          // is not available yet).
+          const incomingScenario = data.scenario_id
+          const canApplyIncoming = !userClearedScenario && !wasUserSelected && !userSelectedScenarioRef.current && (metadataOptions.length === 0 || metadataOptions.includes(incomingScenario))
+          if (canApplyIncoming) setScenarioId(incomingScenario)
+        }
+        if (!wasUserSelected) {
+          if (typeof data.video_id === 'string') setVideoId(data.video_id)
+          else if (typeof data.video_filename === 'string') setVideoId(stripExtension(String(data.video_filename).split('/').pop() || ''))
+        }
+        // Clear the user-selected flag after processing
+  userSelectedVideoRef.current = false
+  userSelectedScenarioRef.current = false
+  if (typeof data.task === 'string') setTaskLabel(data.task)
+  else setTaskLabel('')
         if (typeof data.environment === 'string') setEnvironment(data.environment)
         if (typeof data.object === 'string') setObjectName(data.object)
         if (Array.isArray(data.actions) && data.actions.length > 0) {
@@ -694,7 +746,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [selectedVideoFile])
+  }, [selectedVideoFile, metadataOptions, userClearedScenario])
 
   useEffect(() => {
     const v = mainVideoRef.current
@@ -731,16 +783,92 @@ export default function App() {
     const onPlay = () => {
       refreshVideoMeta()
     }
+    const onMainPlayForRef = () => {
+      const rv = referenceVideoRef.current
+      if (!rv) return
+      try { rv.currentTime = v.currentTime } catch (_e) {}
+      rv.play().catch(() => {})
+    }
+    const onMainPauseForRef = () => {
+      const rv = referenceVideoRef.current
+      if (!rv) return
+      rv.pause()
+    }
     v.addEventListener('loadedmetadata', onLoaded)
     v.addEventListener('timeupdate', onTime)
     v.addEventListener('play', onPlay)
+    v.addEventListener('play', onMainPlayForRef)
+    v.addEventListener('pause', onMainPauseForRef)
     refreshVideoMeta()
     return () => {
       v.removeEventListener('loadedmetadata', onLoaded)
       v.removeEventListener('timeupdate', onTime)
       v.removeEventListener('play', onPlay)
+      v.removeEventListener('play', onMainPlayForRef)
+      v.removeEventListener('pause', onMainPauseForRef)
     }
   }, [selectedVideoFile])
+
+  // Draggable PiP handlers
+  const onPipPointerMove = useCallback((ev: PointerEvent) => {
+    if (!pipDragRef.current.active) return
+    const deltaX = ev.clientX - pipDragRef.current.startX
+    const deltaY = ev.clientY - pipDragRef.current.startY
+    // compute new top and right
+    let newTop = pipDragRef.current.startTop + deltaY
+    let newRight = pipDragRef.current.startRight - deltaX
+    // clamp within viewport with small margin
+    const margin = 8
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    newTop = Math.max(margin, Math.min(vh - PIP_HEIGHT - margin, newTop))
+    newRight = Math.max(margin, Math.min(vw - PIP_WIDTH - margin, newRight))
+    setPipTop(newTop)
+    setPipRight(newRight)
+  }, [])
+
+  const endPipDrag = useCallback(() => {
+    if (!pipDragRef.current.active) return
+    pipDragRef.current.active = false
+    window.removeEventListener('pointermove', onPipPointerMove)
+    window.removeEventListener('pointerup', endPipDrag)
+  }, [onPipPointerMove])
+
+  const startPipDrag = useCallback((ev: React.PointerEvent) => {
+    // Only left button
+    if (ev.button !== 0) return
+    ev.currentTarget.setPointerCapture?.(ev.nativeEvent.pointerId)
+    pipDragRef.current.active = true
+    pipDragRef.current.startX = ev.nativeEvent.clientX
+    pipDragRef.current.startY = ev.nativeEvent.clientY
+    pipDragRef.current.startTop = pipTop
+    pipDragRef.current.startRight = pipRight
+    window.addEventListener('pointermove', onPipPointerMove)
+    window.addEventListener('pointerup', endPipDrag)
+  }, [onPipPointerMove, pipTop, pipRight, endPipDrag])
+
+  useEffect(() => {
+    // initialize pip position to match original CSS-based placement on first mount
+    if (!pipMountedRef.current) {
+      pipMountedRef.current = true
+      try {
+        const root = document.documentElement
+        const val = window.getComputedStyle(root).getPropertyValue('--header-height') || ''
+        const pxMatch = val.match(/(-?\d+(?:\.\d+)?)px/) // e.g. '64px'
+        const headerPx = pxMatch ? Number(pxMatch[1]) : null
+        if (headerPx != null && Number.isFinite(headerPx)) {
+          setPipTop(headerPx + 100)
+        }
+      } catch (_e) {
+        // ignore and keep default
+      }
+    }
+    return () => {
+      // cleanup if component unmounts while dragging
+      window.removeEventListener('pointermove', onPipPointerMove)
+      window.removeEventListener('pointerup', endPipDrag)
+    }
+  }, [onPipPointerMove, endPipDrag])
 
   useEffect(() => {
     const lv = leftVideoRef.current
@@ -1063,6 +1191,18 @@ export default function App() {
     if (Number.isNaN(clamped)) return
     video.currentTime = clamped
     setCurrentTime(clamped)
+    // Also attempt to sync the reference (PiP) video to the same time so
+    // scrub actions keep both videos aligned. Ignore errors if the ref
+    // video isn't ready or not present.
+    try {
+      const ref = referenceVideoRef.current
+      if (ref && typeof ref.currentTime === 'number') {
+        // Only set when a reference video exists
+        ref.currentTime = clamped
+      }
+    } catch (_err) {
+      // ignore - setting currentTime can throw if not yet loaded
+    }
   }
 
   function updateInteractionLabel(idx: number, label: string) {
@@ -1502,7 +1642,7 @@ export default function App() {
       scenario_id: scenarioId,
       video_id: videoId,
       video_filename: selectedVideoFile,
-      task_label: taskLabel,
+      task: taskLabel,
       environment: environment,
       object: objectName,
       actions: actions,
@@ -1544,28 +1684,71 @@ export default function App() {
         </button>
         <div className="title">📽 Video Annotator</div>
         <div className="header-right">
-          <button
-            className="icon-button with-tooltip"
-            aria-label="Undo"
-            data-tooltip="Undo (Ctrl/Cmd+Z)"
-            onClick={undo}
-            disabled={undoStack.length === 0}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5H7l3-3M7 5l3 3M7 5h5a7 7 0 110 14h-2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button
-            className="icon-button with-tooltip"
-            aria-label="Redo"
-            data-tooltip="Redo (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
-            onClick={redo}
-            disabled={redoStack.length === 0}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5h5l-3-3M17 5l-3 3M17 5h-5a7 7 0 100 14h2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
+          <div style={{ position: 'relative' }} className="video-picker">
+            <span>Scenario</span>
+            <div className="custom-select custom-select--scenario" ref={scenarioSelectRef}>
+              <button
+                type="button"
+                className="input custom-select-trigger"
+                onClick={() => setScenarioDropdownOpen(prev => !prev)}
+                aria-haspopup="listbox"
+                aria-expanded={scenarioDropdownOpen}
+              >
+                <span className="custom-select-value">{scenarioId || '—'}</span>
+                <span className="custom-select-caret">▾</span>
+              </button>
+              {scenarioDropdownOpen && (
+                <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                  {metadataOptions.length > 0 ? (
+                    <>
+                      <button
+                        key="__none__"
+                        type="button"
+                        className={`custom-select-option${scenarioId === '' ? ' is-selected' : ''}`}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => {
+                          setScenarioId('')
+                          setUserClearedScenario(true)
+                          setRestrictToMetadata(false)
+                          void fetchVideos()
+                            .then(list => {
+                              if (Array.isArray(list)) {
+                                setVideoOptions(list)
+                                setSelectedVideoFile(prev => (list.includes(prev) ? prev : list[0] ?? ''))
+                              } else {
+                                setVideoOptions([])
+                              }
+                            })
+                            .catch(() => {})
+                          setScenarioDropdownOpen(false)
+                        }}
+                      >
+                        -
+                      </button>
+                      {metadataOptions.map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          className={`custom-select-option${m === scenarioId ? ' is-selected' : ''}`}
+                          onMouseDown={e => e.stopPropagation()}
+                          onClick={() => {
+                            userSelectedScenarioRef.current = true
+                            setScenarioId(m)
+                            setUserClearedScenario(false)
+                            setScenarioDropdownOpen(false)
+                          }}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="custom-select-empty" style={{ padding: 8 }}>No scenarios</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
           {videoOptions.length > 0 && (
             <div style={{ position: 'relative' }} className="video-picker">
               <span>Video</span>
@@ -1589,6 +1772,10 @@ export default function App() {
                         className={`custom-select-option${file === selectedVideoFile ? ' is-selected' : ''}`}
                         onMouseDown={e => e.stopPropagation()}
                         onClick={() => {
+                          // Mark that this selection was user-initiated so the
+                          // subsequent annotation load does not clobber the
+                          // user's choice.
+                          userSelectedVideoRef.current = true
                           setSelectedVideoFile(file)
                           setVideoHeaderDropdownOpen(false)
                         }}
@@ -1601,6 +1788,28 @@ export default function App() {
               </div>
             </div>
           )}
+          <button
+            className="icon-button with-tooltip"
+            aria-label="Undo"
+            data-tooltip="Undo (Ctrl/Cmd+Z)"
+            onClick={undo}
+            disabled={undoStack.length === 0}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5H7l3-3M7 5l3 3M7 5h5a7 7 0 110 14h-2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+          <button
+            className="icon-button with-tooltip"
+            aria-label="Redo"
+            data-tooltip="Redo (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
+            onClick={redo}
+            disabled={redoStack.length === 0}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5h5l-3-3M17 5l-3 3M17 5h-5a7 7 0 100 14h2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
         </div>
 
         {/* Hover tooltip for bars */}
@@ -1696,6 +1905,7 @@ export default function App() {
                         className={`custom-select-option${file === selectedVideoFile ? ' is-selected' : ''}`}
                         onMouseDown={e => e.stopPropagation()}
                         onClick={() => {
+                          userSelectedVideoRef.current = true
                           setSelectedVideoFile(file)
                           setVideoSideDropdownOpen(false)
                         }}
@@ -1716,7 +1926,7 @@ export default function App() {
                 <dt className="side-menu-meta-label">Filename</dt>
                 <dd className="side-menu-meta-value">{selectedVideoFile || '–'}</dd>
               </div>
-              {referenceVideoFile && (
+              {scenarioId && referenceVideoFile && (
                 <div className="side-menu-meta-row">
                   <dt className="side-menu-meta-label">Reference</dt>
                   <dd className="side-menu-meta-value">{referenceVideoFile}</dd>
@@ -1760,22 +1970,97 @@ export default function App() {
               </div>
             </dl>
           </div>
-              {referenceVideoFile && (
+              {scenarioId && referenceVideoFile && (
                 <div style={{ marginTop: 8 }}>
-                  <button
-                    className="button"
-                    type="button"
-                    onClick={() => {
-                      if (!referenceVideoFile) return
-                      setSelectedVideoFile(referenceVideoFile)
-                    }}
-                  >
-                    Open reference
-                  </button>
+                  <label className="timeline-toggle side-toggle" style={{ margin: 0 }}>
+                    <span className="timeline-toggle-label">Show Reference</span>
+                    <>
+                      <input
+                        className="toggle-checkbox"
+                        type="checkbox"
+                        checked={showReference}
+                        onChange={e => setShowReference(e.target.checked)}
+                        aria-label="Show reference video"
+                      />
+                      <span className="toggle-slider" aria-hidden="true" />
+                    </>
+                  </label>
                 </div>
               )}
         </div>
       </SideMenu>
+
+      {/* Picture-in-Picture overlay for reference video (syncs with main) */}
+      {scenarioId && referenceVideoFile && showReference && (
+        <div
+          onPointerDown={startPipDrag}
+          role="button"
+          tabIndex={0}
+          style={{
+            position: 'fixed',
+            top: pipTop,
+            right: pipRight,
+            zIndex: 1300,
+            width: PIP_WIDTH,
+            height: PIP_HEIGHT,
+            borderRadius: 8,
+            overflow: 'hidden',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            background: '#000',
+            touchAction: 'none',
+            cursor: 'grab'
+          }}
+        >
+          {/* Swap button (top-right inside PiP) */}
+          <button
+            type="button"
+            className="icon-button with-tooltip"
+            aria-label="Swap with main"
+            data-tooltip="Swap with main video"
+            onClick={() => {
+              const mv = mainVideoRef.current
+              const rv = referenceVideoRef.current
+              if (!mv || !rv) {
+                setIsSwapped(s => !s)
+                return
+              }
+              const mainWasPlaying = !mv.paused && !mv.ended
+              const refWasPlaying = !rv.paused && !rv.ended
+              const mainTime = mv.currentTime
+              const refTime = rv.currentTime
+              // toggle swapped state
+              setIsSwapped(s => !s)
+              // After React updates and videos reload, restore times and play state
+              window.setTimeout(() => {
+                const newMain = mainVideoRef.current
+                const newRef = referenceVideoRef.current
+                if (!newMain || !newRef) return
+                try { newMain.currentTime = refTime } catch (_e) {}
+                try { newRef.currentTime = mainTime } catch (_e) {}
+                if (mainWasPlaying) newMain.play().catch(() => {})
+                else newMain.pause()
+                if (refWasPlaying) newRef.play().catch(() => {})
+                else newRef.pause()
+              }, 120)
+            }}
+            style={{ position: 'absolute', top: 8, right: 8, zIndex: 1310, width: 36, height: 36 }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 00-2-2h-8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3 8v8a2 2 0 002 2h8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M7 8l-4 4 4 4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M17 16l4-4-4-4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <video
+            key={`ref-overlay-${isSwapped ? selectedVideoFile : referenceVideoFile}`}
+            ref={referenceVideoRef}
+            src={pipSrc}
+            muted
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        </div>
+      )}
 
       {activeScreen === 'configuration' && (
         <div
@@ -1831,72 +2116,6 @@ export default function App() {
       )}
 
       <div className="action-form">
-            <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label className="field-label">Scenario</label>
-          <div style={{ position: 'relative' }}>
-            <div className="custom-select custom-select--scenario" ref={scenarioSelectRef}>
-              <button
-                type="button"
-                className="input custom-select-trigger"
-                onClick={() => setScenarioDropdownOpen(prev => !prev)}
-                aria-haspopup="listbox"
-                aria-expanded={scenarioDropdownOpen}
-              >
-                <span className="custom-select-value">{scenarioId || '—'}</span>
-                <span className="custom-select-caret">▾</span>
-              </button>
-              {scenarioDropdownOpen && (
-                <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
-                  {metadataOptions.length > 0 ? (
-                    <>
-                      <button
-                        key="__none__"
-                        type="button"
-                        className={`custom-select-option${scenarioId === '' ? ' is-selected' : ''}`}
-                        onMouseDown={e => e.stopPropagation()}
-                        onClick={() => {
-                          setScenarioId('')
-                          setUserClearedScenario(true)
-                          setRestrictToMetadata(false)
-                          void fetchVideos()
-                            .then(list => {
-                              if (Array.isArray(list)) {
-                                setVideoOptions(list)
-                                setSelectedVideoFile(prev => (list.includes(prev) ? prev : list[0] ?? ''))
-                              } else {
-                                setVideoOptions([])
-                              }
-                            })
-                            .catch(() => {})
-                          setScenarioDropdownOpen(false)
-                        }}
-                      >
-                        -
-                      </button>
-                      {metadataOptions.map(m => (
-                        <button
-                          key={m}
-                          type="button"
-                          className={`custom-select-option${m === scenarioId ? ' is-selected' : ''}`}
-                          onMouseDown={e => e.stopPropagation()}
-                          onClick={() => {
-                            setScenarioId(m)
-                            setUserClearedScenario(false)
-                            setScenarioDropdownOpen(false)
-                          }}
-                        >
-                          {m}
-                        </button>
-                      ))}
-                    </>
-                  ) : (
-                    <div className="custom-select-empty" style={{ padding: 8 }}>No scenarios</div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
             <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label className="field-label">Object</label>
           <div style={{ position: 'relative' }}>
@@ -2044,7 +2263,7 @@ export default function App() {
           <VideoPanel
             videoKey={`main-${selectedVideoFile}`}
             videoRef={mainVideoRef}
-            src={videoSource}
+            src={mainSrc}
             currentTime={currentTime}
             duration={duration}
             volume={volume}

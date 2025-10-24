@@ -217,7 +217,15 @@ def list_video_files(directory: Path) -> List[str]:
     for item in directory.rglob('*'):
         if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS:
             try:
-                rel = item.relative_to(directory).as_posix()
+                rel_path = item.relative_to(directory)
+                # Skip files placed under the 'reference' directory
+                # (e.g. frontend/public/reference/*). We only want videos
+                # under the main videos tree (not reference assets) shown
+                # in the dropdown.
+                parts = rel_path.parts
+                if parts and parts[0].lower() == 'reference':
+                    continue
+                rel = rel_path.as_posix()
                 files.append(rel)
             except Exception:
                 # Fallback to name if relative fails (shouldn't happen)
@@ -321,26 +329,139 @@ def _resolve_video_path(filename: str) -> Path:
 
 @app.post('/save')
 async def save_annotation(ann: Annotation):
-    target_path = _annotation_path_from_filename(ann.video_filename or ann.video_id)
+    # Determine a candidate stem for the annotation filename. Prefer a
+    # provided top-level video_path (strip directories), then video_filename,
+    # then video_id.
+    candidate_stem = None
+    if getattr(ann, 'video_path', None):
+        try:
+            candidate_stem = Path(ann.video_path).name
+        except Exception:
+            candidate_stem = None
+    if not candidate_stem and getattr(ann, 'video_filename', None):
+        try:
+            candidate_stem = Path(ann.video_filename).name
+        except Exception:
+            candidate_stem = None
+    if not candidate_stem:
+        candidate_stem = ann.video_id
+    target_path = _annotation_path_from_filename(candidate_stem or '')
     _ensure_directory(target_path.parent)
     try:
         # Convert to the requested export format: array of objects per interaction
         # Example item keys:
-        #   video_path, task_label, object, environment, action_label,
+        #   video_path, task, object, environment, action_label,
         #   start_time, end_time, start_frame, end_frame, contact
-        # Use only the base file name to avoid duplicating nested folders
-        video_basename = Path(ann.video_filename).name if ann.video_filename else ''
-        video_path = f"videos/{ann.scenario_id}/{video_basename}"
+        # Build a best-effort, canonical video_path that points to an actual
+        # file under the server's VIDEO_DIRECTORY. Prefer explicit inputs
+        # (ann.video_filename / ann.scenario_id), but fall back to scanning
+        # available videos to find a matching basename.
+        # Derive the basename from top-level video_path if present, else
+        # from video_filename or video_id.
+        if getattr(ann, 'video_path', None):
+            try:
+                video_basename = Path(ann.video_path).name
+            except Exception:
+                video_basename = ''
+        else:
+            video_basename = Path(ann.video_filename).name if ann.video_filename else (f"{ann.video_id}.mp4" if ann.video_id else '')
+
+        # Helper to test whether a relative path exists under DEFAULT_VIDEO_DIR
+        def _exists_under_videodir(rel: str) -> bool:
+            if not rel:
+                return False
+            try:
+                candidate = (DEFAULT_VIDEO_DIR / rel).resolve()
+                # Ensure it's still under the video base
+                candidate.relative_to(DEFAULT_VIDEO_DIR.resolve())
+                return candidate.exists() and candidate.is_file()
+            except Exception:
+                return False
+
+        rel_candidate = ''
+        # If client provided a top-level video_path or video_filename, prefer it (strip leading 'videos/')
+        if getattr(ann, 'video_path', None):
+            source_path = ann.video_path
+        else:
+            source_path = ann.video_filename
+        if source_path:
+            try:
+                p = Path(source_path)
+                parts = p.parts
+                if parts and parts[0].lower() == 'videos' and len(parts) > 1:
+                    rel_candidate = Path(*parts[1:]).as_posix()
+                else:
+                    # Use the provided path as-is (may be just the basename)
+                    rel_candidate = p.as_posix().lstrip('/')
+            except Exception:
+                rel_candidate = Path(source_path).name
+
+        resolved_rel = ''
+        # 1) If candidate points to an existing file, use it
+        if rel_candidate and _exists_under_videodir(rel_candidate):
+            resolved_rel = rel_candidate
+        else:
+            # 2) If scenario_id is provided, try that folder first
+            if ann.scenario_id:
+                cand = f"{ann.scenario_id}/{video_basename}" if video_basename else ann.scenario_id
+                if _exists_under_videodir(cand):
+                    resolved_rel = cand
+            # 3) Search the available video list for a matching basename (prefer same scenario if given)
+            if not resolved_rel:
+                all_videos = list_video_files(DEFAULT_VIDEO_DIR)
+                match: str | None = None
+                preferred_prefix = ann.scenario_id or ''
+                for v in all_videos:
+                    if v.split('/')[-1] == video_basename:
+                        # Prefer files under the same scenario folder
+                        if preferred_prefix and v.split('/')[0] == preferred_prefix:
+                            match = v
+                            break
+                        if match is None:
+                            match = v
+                if match:
+                    resolved_rel = match
+        # 4) Final fallback: use a simple constructed path (may not exist)
+        if not resolved_rel:
+            resolved_rel = f"{ann.scenario_id}/{video_basename}" if ann.scenario_id and video_basename else video_basename
+
+        video_path = f"videos/{resolved_rel}" if resolved_rel else ''
+
         # Sort interactions by start_time (then end_time, start_frame) for stable output
         interactions_sorted = sorted(
             ann.interactions,
             key=lambda it: (it.start_time, it.end_time, it.start_frame),
         )
-        items = []
+
+        # Produce a hybrid, top-level object format that includes video-level
+        # metadata (task, environment, object, actions) and an
+        # interactions array where each interaction also contains
+        # video_path/object/environment for per-interaction convenience.
+        # Build a de-duplicated ordered list of action labels as they appear
+        # in the interactions (preserves first-seen order).
+        actions_list: List[str] = []
         for it in interactions_sorted:
-            items.append({
+            label = getattr(it, 'action_label', None)
+            if isinstance(label, str) and label and label not in actions_list:
+                actions_list.append(label)
+
+        # Top-level annotation object: include video_path (canonical) and
+        # keep video_id. We intentionally omit video_filename here in favor
+        # of video_path as the canonical reference.
+        legacy_obj = {
+            "scenario_id": ann.scenario_id,
+            "video_id": ann.video_id,
+            "video_path": video_path,
+            # Save task under the canonical 'task' key
+            "task": ann.task,
+            "environment": ann.environment,
+            "object": ann.object,
+            "actions": actions_list,
+            "interactions": [],
+        }
+        for it in interactions_sorted:
+            legacy_obj["interactions"].append({
                 "video_path": video_path,
-                "task_label": ann.task_label,
                 "object": ann.object,
                 "environment": ann.environment,
                 "action_label": it.action_label,
@@ -350,7 +471,7 @@ async def save_annotation(ann: Annotation):
                 "end_frame": it.end_frame,
                 "contact": it.contact,
             })
-        target_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding='utf-8')
+        target_path.write_text(json.dumps(legacy_obj, ensure_ascii=False, indent=2), encoding='utf-8')
     except PermissionError as exc:
         raise HTTPException(status_code=500, detail=f"Cannot write annotation file: {target_path}") from exc
     return {"status": "saved", "file": target_path.name}
@@ -393,8 +514,8 @@ async def load_annotation(video_name: str):
             video_filename = f"{video_name}.mp4"
         video_id = Path(video_filename).stem
 
-        # Pull common fields from the first item, if present
-        task_label = first.get('task_label') or ''
+        # Pull common fields from the first item, if present.
+        task = first.get('task') or ''
         environment = first.get('environment') or ''
         obj = first.get('object') or ''
 
@@ -418,8 +539,8 @@ async def load_annotation(video_name: str):
         legacy = {
             'scenario_id': scenario_id,
             'video_id': video_id,
-            'video_filename': video_filename,
-            'task_label': task_label,
+            'video_path': video_path,
+            'task': task,
             'environment': environment,
             'object': obj,
             'actions': actions_list,
@@ -429,6 +550,8 @@ async def load_annotation(video_name: str):
 
     # If it's already an object (legacy), return as-is
     if isinstance(data, dict):
+        # If stored as an object, prefer the 'task' key (migrate and return as-is).
+        # Note: older files should have been migrated to use 'task'.
         return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
 
     # Unknown content shape; fallback to direct file response
