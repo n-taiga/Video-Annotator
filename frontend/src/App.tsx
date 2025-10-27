@@ -119,7 +119,7 @@ export default function App() {
   const [userClearedScenario, setUserClearedScenario] = useState(false)
   const [videoId, setVideoId] = useState('')
   const [taskLabel, setTaskLabel] = useState('')
-  const [environment, setEnvironment] = useState('kitchen')
+  const [environment, setEnvironment] = useState('')
   const [objectName, setObjectName] = useState('cup')
   const baseActionsRef = useRef<string[]>(initialActionList)
   const [actions, setActions] = useState<string[]>(initialActionList)
@@ -837,6 +837,19 @@ export default function App() {
   const startPipDrag = useCallback((ev: React.PointerEvent) => {
     // Only left button
     if (ev.button !== 0) return
+    // If the pointerdown originated on an interactive child (button, link,
+    // form control, or anything with role="button"), don't start a drag
+    // because the user likely intended to click that control.
+    try {
+      const tgt = ev.target as HTMLElement | null
+      if (tgt && typeof tgt.closest === 'function') {
+        const isInteractive = tgt.closest('button, a, input, textarea, select, [role="button"]') as HTMLElement | null
+        // Only cancel drag when the interactive element is inside this PiP container
+        if (isInteractive && ev.currentTarget && (ev.currentTarget as HTMLElement).contains(isInteractive)) return
+      }
+    } catch (_e) {
+      // ignore and continue
+    }
     ev.currentTarget.setPointerCapture?.(ev.nativeEvent.pointerId)
     pipDragRef.current.active = true
     pipDragRef.current.startX = ev.nativeEvent.clientX
@@ -1993,7 +2006,6 @@ export default function App() {
       {/* Picture-in-Picture overlay for reference video (syncs with main) */}
       {scenarioId && referenceVideoFile && showReference && (
         <div
-          onPointerDown={startPipDrag}
           role="button"
           tabIndex={0}
           style={{
@@ -2007,10 +2019,15 @@ export default function App() {
             overflow: 'hidden',
             boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
             background: '#000',
-            touchAction: 'none',
-            cursor: 'grab'
+            touchAction: 'none'
           }}
         >
+          {/* Drag handle: only this area starts PiP drag. Keep it under control buttons so clicks on buttons still work. */}
+          <div
+            onPointerDown={startPipDrag}
+            aria-hidden="true"
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '100%', cursor: 'grab', zIndex: 1305 }}
+          />
           {/* Swap button (top-right inside PiP) */}
           <button
             type="button"
