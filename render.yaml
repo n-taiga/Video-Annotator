@@ -8,14 +8,8 @@ services:
     envVars:
       - key: PYTHONUNBUFFERED
         value: 1
-      - key: VIDEO_DIRECTORY
-        value: /data/videos
-      - key: ANNOTATION_DIRECTORY
-        value: /data/annotations
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 10
+    # NOTE: persistent disks are not available on the free plan.
+    # The disk block was removed so this service can be created on the free tier.
     plan: free
 
   # --- Frontend: Vite build + static hosting ---
