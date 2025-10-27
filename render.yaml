@@ -1,0 +1,38 @@
+services:
+  # --- Backend: FastAPI ---
+  - type: web
+    name: annotation-backend
+    env: docker
+    dockerfilePath: backend/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: VIDEO_DIRECTORY
+        value: /data/videos
+      - key: ANNOTATION_DIRECTORY
+        value: /data/annotations
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 10
+    plan: free
+
+  # --- Frontend: Vite build + static hosting ---
+  - type: web
+    name: annotation-frontend
+    env: static
+    buildCommand: |
+      cd frontend
+      npm ci
+      npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: https://annotation-backend.onrender.com
+      - key: VITE_API_URL
+        value: /api
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
