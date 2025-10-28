@@ -2413,8 +2413,13 @@ export default function App() {
 
       {/* Floating Export button at bottom-left */}
       <div className="fab-export-left">
-        <button className="button" onClick={exportJSON} disabled={saveStatus.status === 'saving'}>
-          {saveStatus.status === 'saving' ? 'Saving…' : 'Export JSON'}
+        <button
+          className="button"
+          onClick={exportJSON}
+          disabled={saveStatus.status === 'saving'}
+          style={{ fontWeight: 'bold', fontSize: '16px' }}
+        >
+          {saveStatus.status === 'saving' ? 'Saving…' : 'Submit'}
         </button>
         {saveStatus.status !== 'idle' && (
           <span
