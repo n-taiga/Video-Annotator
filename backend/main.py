@@ -27,18 +27,14 @@ DEFAULT_ANNOTATION_DIR = Path(
 )
 
 DEFAULT_ACTION_LABELS: Dict[str, str] = {
-    "Drink": "#F97316",
-    "Pour": "#22D3EE",
-    "Stir": "#A855F7",
-    "Spill": "#FB7185",
-    "Pick up": "#22C55E",
-    "Put down": "#FACC15",
-    "Carry": "#38BDF8",
-    "Look at": "#F471B5",
-    "Point at": "#94A3B8",
-    "Approach": "#F973D5",
-    "Move away": "#0EA5E9",
-    "None": "#64748B",
+  "Grab": "#1FE100",
+  "Put down": "#129EFF",
+  "Carry": "#FFCF09",
+  "Store": "#FD9100",
+  "Point at": "#47ABF9",
+  "Look at": "#F9419E",
+  "Approach": "#89DE0A",
+  "Move away": "#AD03A7",
 }
 
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"

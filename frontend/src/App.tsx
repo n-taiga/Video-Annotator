@@ -2419,7 +2419,7 @@ export default function App() {
           disabled={saveStatus.status === 'saving'}
           style={{ fontWeight: 'bold', fontSize: '16px' }}
         >
-          {saveStatus.status === 'saving' ? 'Saving…' : 'Submit'}
+          {saveStatus.status === 'saving' ? 'Saving…' : 'Save JSON'}
         </button>
         {saveStatus.status !== 'idle' && (
           <span
