@@ -449,9 +449,17 @@ export default function App() {
 
   // Apply playback rate to main video
   useEffect(() => {
-    const v = mainVideoRef.current
-    if (!v) return
-    v.playbackRate = playbackRate
+    // Apply playbackRate to all rendered video elements so PiP and previews
+    // match the main video's speed.
+    const refs = [mainVideoRef.current, referenceVideoRef.current, leftVideoRef.current, rightVideoRef.current]
+    refs.forEach(v => {
+      if (!v) return
+      try {
+        v.playbackRate = playbackRate
+      } catch (_e) {
+        // ignore if not ready or unsupported
+      }
+    })
   }, [playbackRate, selectedVideoFile])
 
   useEffect(() => {
@@ -1649,6 +1657,41 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Global playback/seek shortcuts: Space toggles play/pause, ArrowLeft/ArrowRight seek ±1s.
+  useEffect(() => {
+    const onGlobalKey = (e: KeyboardEvent) => {
+      // Ignore when modifier keys used (allow Ctrl/Cmd combos for other shortcuts)
+      if (e.ctrlKey || e.metaKey) return
+      // Ignore when focus is in an input, textarea, select or contenteditable
+      const active = document.activeElement as HTMLElement | null
+      if (active) {
+        const tag = active.tagName
+        const editable = active.getAttribute && (active.getAttribute('contenteditable') === 'true' || active.isContentEditable)
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || editable) return
+      }
+
+      const v = mainVideoRef.current
+      if (!v) return
+
+      if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault()
+        if (v.paused) {
+          v.play().catch(() => {})
+        } else {
+          v.pause()
+        }
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        seekVideo((currentTime || 0) - 1)
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        seekVideo((currentTime || 0) + 1)
+      }
+    }
+    window.addEventListener('keydown', onGlobalKey)
+    return () => window.removeEventListener('keydown', onGlobalKey)
+  }, [currentTime])
+
   async function exportJSON() {
   setSaveStatus({ status: 'saving', message: 'Saving…' })
     const payload = {
@@ -2289,6 +2332,7 @@ export default function App() {
             onToggleMute={() => setMuted(m => !m)}
             playbackRate={playbackRate}
             onPlaybackRateChange={setPlaybackRate}
+            onSeekBy={(d: number) => seekVideo(currentTime + d)}
             activeLabels={activeTimelineLabels.length > 0 ? activeTimelineLabels : undefined}
             activeColors={activeTimelineLabels.length > 0 ? activeTimelineLabels.map(l => getLabelColor(labelColors, l, '#94A3B8')) : undefined}
           />

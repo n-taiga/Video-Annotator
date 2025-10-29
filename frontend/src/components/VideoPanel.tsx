@@ -12,14 +12,45 @@ interface VideoPanelProps {
   onToggleMute: () => void
   playbackRate: number
   onPlaybackRateChange: (r: number) => void
+  onSeekBy?: (delta: number) => void
   // support multiple active labels overlapping the current time
   activeLabels?: string[]
   activeColors?: string[]
 }
 
-export default function VideoPanel({ videoKey, videoRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, activeLabels, activeColors }: VideoPanelProps) {
-  const handlePlay = () => videoRef.current?.play()
-  const handlePause = () => videoRef.current?.pause()
+export default function VideoPanel({ videoKey, videoRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, onSeekBy, activeLabels, activeColors }: VideoPanelProps) {
+  // Single toggle state for play/pause. We listen to the video's play/pause
+  // events so the button reflects external changes (e.g. programmatic play).
+  const [isPlaying, setIsPlaying] = React.useState(false)
+
+  React.useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const onPlay = () => setIsPlaying(true)
+    const onPause = () => setIsPlaying(false)
+    v.addEventListener('play', onPlay)
+    v.addEventListener('pause', onPause)
+    // initialize state based on current paused property
+    try {
+      setIsPlaying(!v.paused)
+    } catch (_e) {
+      // ignore
+    }
+    return () => {
+      v.removeEventListener('play', onPlay)
+      v.removeEventListener('pause', onPause)
+    }
+  }, [videoRef, src])
+
+  const togglePlayPause = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) {
+      v.play().catch(() => {})
+    } else {
+      v.pause()
+    }
+  }
 
   return (
     <div className="video-pair">
@@ -42,23 +73,73 @@ export default function VideoPanel({ videoKey, videoRef, src, currentTime, durat
             width="100%"
           />
           <div className="controls">
+            {/* 1秒戻し */}
             <button
               className="icon-button"
-              aria-label="Play"
-              onClick={handlePlay}
+              aria-label="Rewind 1s"
+              title="Rewind 1s"
+              onClick={() => {
+                if (typeof onSeekBy === 'function') {
+                  onSeekBy(-1)
+                  return
+                }
+                const v = videoRef.current
+                if (!v) return
+                try {
+                  const target = Math.max(0, (v.currentTime || 0) - 1)
+                  v.currentTime = target
+                } catch (_e) {
+                  // ignore
+                }
+              }}
             >
-              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-                <polygon points="6,4 16,10 6,16" />
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M11 18V6l-8 6 8 6zM21 18V6l-8 6 8 6z" fill="#0b1220" />
               </svg>
             </button>
+
+            {/* Play/Pause toggle */}
             <button
               className="icon-button"
-              aria-label="Pause"
-              onClick={handlePause}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              title={isPlaying ? 'Pause' : 'Play'}
+              onClick={togglePlayPause}
             >
-              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-                <rect x="5" y="4" width="4" height="12" />
-                <rect x="11" y="4" width="4" height="12" />
+              {isPlaying ? (
+                <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="5" y="4" width="4" height="12" />
+                  <rect x="11" y="4" width="4" height="12" />
+                </svg>
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+                  <polygon points="6,4 16,10 6,16" />
+                </svg>
+              )}
+            </button>
+
+            {/* 1秒送り */}
+            <button
+              className="icon-button"
+              aria-label="Forward 1s"
+              title="Forward 1s"
+              onClick={() => {
+                if (typeof onSeekBy === 'function') {
+                  onSeekBy(1)
+                  return
+                }
+                const v = videoRef.current
+                if (!v) return
+                try {
+                  const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : (v.duration || Infinity)
+                  const target = Math.min(maxDuration, (v.currentTime || 0) + 1)
+                  v.currentTime = target
+                } catch (_e) {
+                  // ignore
+                }
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M13 6v12l8-6-8-6zM3 6v12l8-6L3 6z" fill="#0b1220" />
               </svg>
             </button>
             <div style={{marginLeft:12}}>Time: {currentTime.toFixed(2)} / {duration.toFixed(2)}</div>
