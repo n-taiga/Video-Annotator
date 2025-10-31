@@ -143,6 +143,7 @@ export default function App() {
   const [selectionMenuAction, setSelectionMenuAction] = useState(initialActionList[0] ?? '')
   const interactionMenuRef = useRef<HTMLDivElement | null>(null)
   const selectionMenuRef = useRef<HTMLDivElement | null>(null)
+  const [selectionDropdownOpen, setSelectionDropdownOpen] = useState(false)
 
   const mainVideoRef = useRef<HTMLVideoElement | null>(null)
   const leftVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -1159,8 +1160,33 @@ export default function App() {
     return () => {
       window.removeEventListener('click', handleClick)
       window.removeEventListener('keydown', handleEscape)
+      // ensure dropdown state resets when context menu closes
+      setSelectionDropdownOpen(false)
     }
   }, [contextMenu.open])
+
+  // Ensure Enter key triggers Add Action when the selection context menu is open.
+  // Listening on the menu DOM node directly is more reliable than relying on
+  // global handlers because focus may be inside the menu or on list buttons.
+  useEffect(() => {
+    if (!contextMenu.open || contextMenu.type !== 'selection') return
+    const node = selectionMenuRef.current
+    if (!node) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault()
+        // Confirm the currently-highlighted selectionMenuAction
+        if (selectionMenuAction) {
+          setSelectedAction(selectionMenuAction)
+          // Use the same addInteraction flow as the button
+          addInteraction(selectionMenuAction)
+          closeContextMenu()
+        }
+      }
+    }
+    node.addEventListener('keydown', onKey)
+    return () => node.removeEventListener('keydown', onKey)
+  }, [contextMenu.open, selectionMenuAction, addInteraction])
 
   // Keep the selection menu centered over the brush selection while the range moves
   useEffect(() => {
@@ -1201,6 +1227,25 @@ export default function App() {
     if (!menuEl) return
     menuEl.style.top = `${contextMenu.y}px`
     menuEl.style.left = `${contextMenu.x}px`
+  }, [contextMenu])
+
+  // When the selection context menu opens, ensure it receives keyboard
+  // focus so ArrowUp/ArrowDown and Enter are delivered to the menu
+  // immediately (fixes the reported case where navigation only worked
+  // after interacting with the timeline first).
+  useEffect(() => {
+    if (!contextMenu.open) return
+    if (contextMenu.type !== 'selection') return
+    const node = selectionMenuRef.current
+    if (!node) return
+    // Focus on next tick so the DOM is fully attached.
+    const t = window.setTimeout(() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(node as any).focus()
+      } catch (_e) {}
+    }, 0)
+    return () => window.clearTimeout(t)
   }, [contextMenu])
 
   function seekVideo(time: number) {
@@ -1570,12 +1615,16 @@ export default function App() {
     }
   }
 
-  function addInteraction(labelOverride?: string) {
-    if (dragRange.start === null || dragRange.end === null) return
+  // Add an interaction. Optionally provide a label override and/or an explicit
+  // range override (start/end) so callers (like global Enter) can add without
+  // relying on React state updates to propagate selection first.
+  function addInteraction(labelOverride?: string, rangeOverride?: { start: number; end: number }) {
+    const range = rangeOverride ?? dragRange
+    if (range.start === null || range.end === null) return
     const actionLabel = labelOverride ?? selectedAction
     if (!actionLabel) return
-    const start = Number(dragRange.start.toFixed(3))
-    const end = Number(dragRange.end.toFixed(3))
+    const start = Number(range.start.toFixed(3))
+    const end = Number(range.end.toFixed(3))
     const fps = 30
     const inter: Interaction = {
       start_time: start,
@@ -1601,6 +1650,17 @@ export default function App() {
       setRedoStack([])
       return next
     })
+    // Hide any hover tooltip and close interaction context menu if it
+    // referenced the deleted interaction. Also clear any hover timer.
+    if (hoverTooltipTimerRef.current !== null) {
+      window.clearTimeout(hoverTooltipTimerRef.current)
+      hoverTooltipTimerRef.current = null
+    }
+    setHoverInfo(h => ({ ...h, visible: false }))
+    if (contextMenu.open && contextMenu.type === 'interaction') {
+      // If the context menu was targeting this index, close it.
+      setContextMenu({ open: false })
+    }
   }
 
   function cloneInteractions(list: Interaction[]): Interaction[] {
@@ -1663,14 +1723,18 @@ export default function App() {
       // Ignore when modifier keys used (allow Ctrl/Cmd combos for other shortcuts)
       if (e.ctrlKey || e.metaKey) return
       // Ignore when focus is in an input, textarea, select or contenteditable
+      // — but if the selection context menu is open, allow handling so
+      // shortcuts like 'W' / 'S' still work even though the <select> has focus.
       const active = document.activeElement as HTMLElement | null
       if (active) {
         const tag = active.tagName
         const editable = active.getAttribute && (active.getAttribute('contenteditable') === 'true' || active.isContentEditable)
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || editable) return
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || editable) {
+          if (!(contextMenu.open && contextMenu.type === 'selection')) return
+        }
       }
 
-      const v = mainVideoRef.current
+  const v = mainVideoRef.current
       if (!v) return
 
       if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
@@ -1680,6 +1744,238 @@ export default function App() {
         } else {
           v.pause()
         }
+      } else if (e.key && e.key.toLowerCase() === 'a') {
+        // Set selection start to current time. If no selection exists,
+        // create a default-length selection starting at currentTime.
+        e.preventDefault()
+        const DEFAULT_SELECTION_LEN = 1.0 // seconds
+        const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
+        const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
+        const t = clampTime(currentTime || 0)
+        const start = Number(t.toFixed(3))
+        // If no selection exists, create it and open the selection menu just
+        // like the 'S' key does so the menu receives focus immediately.
+        if (dragRange.start === null && dragRange.end === null) {
+          let rawEnd = clampTime(start + DEFAULT_SELECTION_LEN)
+          let end = Number(rawEnd.toFixed(3))
+          if (end <= start) {
+            end = Number(Math.min((Number.isFinite(maxDuration) ? maxDuration : start + 0.001), start + 0.001).toFixed(3))
+          }
+          setDragRange({ start, end })
+
+          // Compute menu position (prefer SVG scale, else timeline bbox)
+          let menuX = window.innerWidth / 2
+          let menuY = 100
+          try {
+            const s = svgRef.current
+            if (s && xScaleRef.current && typeof start === 'number' && typeof end === 'number') {
+              const rect = s.getBoundingClientRect()
+              const centerTime = (start + end) / 2
+              const cx = xScaleRef.current(centerTime)
+              menuX = rect.left + cx
+              menuY = Math.max(rect.top - 12, 12)
+            } else if (timelineRef.current) {
+              const rect = timelineRef.current.getBoundingClientRect()
+              menuX = rect.left + rect.width / 2
+              menuY = Math.max(rect.top - 12, 12)
+            }
+          } catch (_e) {
+            // ignore and use defaults
+          }
+
+          setSelectionMenuAction(prev => (actions.includes(prev) ? prev : actions[0] ?? ''))
+          setContextMenu({ open: true, type: 'selection', x: menuX, y: menuY })
+        } else {
+          setDragRange(prev => {
+            const prevEnd = prev.end
+            // If both ends exist and start is after end, swap so start <= end
+            if (prevEnd !== null && start > prevEnd) {
+              return { start: prevEnd, end: start }
+            }
+            if (prev.start === start && prev.end === prevEnd) return prev
+            return { start, end: prevEnd }
+          })
+        }
+  } else if (e.key && e.key.toLowerCase() === 'd') {
+        // Set selection end to current time. If no selection exists,
+        // create a default-length selection ending at currentTime.
+        e.preventDefault()
+        const DEFAULT_SELECTION_LEN = 1.0 // seconds
+        const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
+        const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
+        const t = clampTime(currentTime || 0)
+        const end = Number(t.toFixed(3))
+        // If no selection exists, create it and open the selection menu like 'S'
+        if (dragRange.start === null && dragRange.end === null) {
+          let rawStart = clampTime(end - DEFAULT_SELECTION_LEN)
+          let start = Number(rawStart.toFixed(3))
+          if (end <= start) start = Number(Math.max(0, end - 0.001).toFixed(3))
+          setDragRange({ start, end })
+
+          let menuX = window.innerWidth / 2
+          let menuY = 100
+          try {
+            const s = svgRef.current
+            if (s && xScaleRef.current && typeof start === 'number' && typeof end === 'number') {
+              const rect = s.getBoundingClientRect()
+              const centerTime = (start + end) / 2
+              const cx = xScaleRef.current(centerTime)
+              menuX = rect.left + cx
+              menuY = Math.max(rect.top - 12, 12)
+            } else if (timelineRef.current) {
+              const rect = timelineRef.current.getBoundingClientRect()
+              menuX = rect.left + rect.width / 2
+              menuY = Math.max(rect.top - 12, 12)
+            }
+          } catch (_e) {
+            // ignore and use defaults
+          }
+
+          setSelectionMenuAction(prev => (actions.includes(prev) ? prev : actions[0] ?? ''))
+          setContextMenu({ open: true, type: 'selection', x: menuX, y: menuY })
+        } else {
+          setDragRange(prev => {
+            const prevStart = prev.start
+            // If both ends exist and start is after end, swap so start <= end
+            if (prevStart !== null && prevStart > end) {
+              return { start: end, end: prevStart }
+            }
+            if (prevStart === prev.start && prev.end === end) return prev
+            return { start: prevStart, end }
+          })
+        }
+  } else if (e.key && e.key.toLowerCase() === 's') {
+        // Open selection label console. If no selection exists, create a
+        // default-length selection centered on currentTime, then open the
+        // selection context menu positioned above the timeline selection.
+        e.preventDefault()
+        const DEFAULT_SELECTION_LEN = 1.0
+        const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
+        const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
+        const t = clampTime(currentTime || 0)
+
+        let start = dragRange.start
+        let end = dragRange.end
+        if (start === null || end === null) {
+          // create centered selection of DEFAULT_SELECTION_LEN
+          const half = DEFAULT_SELECTION_LEN / 2
+          const rawStart = clampTime(t - half)
+          const rawEnd = clampTime(t + half)
+          start = Number(rawStart.toFixed(3))
+          end = Number(rawEnd.toFixed(3))
+          // ensure non-zero length
+          if (end <= start) {
+            end = Number(Math.min((Number.isFinite(maxDuration) ? maxDuration : start + 0.001), start + 0.001).toFixed(3))
+          }
+          setDragRange({ start, end })
+        }
+
+        // Compute menu position. Prefer SVG x-scale if available, else fallback
+        // to timeline element bounding box.
+        let menuX = window.innerWidth / 2
+        let menuY = 100
+        try {
+          const s = svgRef.current
+          if (s && xScaleRef.current && typeof start === 'number' && typeof end === 'number') {
+            const rect = s.getBoundingClientRect()
+            const centerTime = (start + end) / 2
+            const cx = xScaleRef.current(centerTime)
+            menuX = rect.left + cx
+            menuY = Math.max(rect.top - 12, 12)
+          } else if (timelineRef.current) {
+            const rect = timelineRef.current.getBoundingClientRect()
+            menuX = rect.left + rect.width / 2
+            menuY = Math.max(rect.top - 12, 12)
+          }
+        } catch (_e) {
+          // ignore and use defaults
+        }
+
+        setSelectionMenuAction(prev => (actions.includes(prev) ? prev : actions[0] ?? ''))
+        setContextMenu({ open: true, type: 'selection', x: menuX, y: menuY })
+      } else if (e.key && e.key.toLowerCase() === 'w') {
+        // Toggle contact (on/off)
+        e.preventDefault()
+        setContact(c => !c)
+      } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && contextMenu.open && contextMenu.type === 'selection') {
+        // When the selection menu is open, allow ArrowUp / ArrowDown to
+        // change the currently-highlighted label in the selection menu.
+        e.preventDefault()
+        const cur = actions.indexOf(selectionMenuAction)
+        if (e.key === 'ArrowUp') {
+          // move to previous if possible
+          const prevIdx = cur > 0 ? cur - 1 : 0
+          if (actions[prevIdx] && actions[prevIdx] !== selectionMenuAction) setSelectionMenuAction(actions[prevIdx])
+        } else {
+          // ArrowDown: move to next if possible
+          const nextIdx = cur === -1 ? 0 : Math.min(actions.length - 1, cur + 1)
+          if (actions[nextIdx] && actions[nextIdx] !== selectionMenuAction) setSelectionMenuAction(actions[nextIdx])
+        }
+  } else if (e.key === 'Enter') {
+        // Global Enter: always try to Add Action (unless focus is in a
+        // text input/textarea/select — focus guard above prevents that).
+        // If the selection context menu is open we let the local menu
+        // handler handle Enter to avoid duplicate additions.
+        if (contextMenu.open && contextMenu.type === 'selection') {
+          // do nothing here; local menu listener will handle Enter
+        } else {
+          e.preventDefault()
+          const DEFAULT_SELECTION_LEN = 1.0
+          const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : (v ? v.duration : NaN)
+          const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
+          const t = clampTime(currentTime || 0)
+          if (dragRange.start !== null && dragRange.end !== null) {
+            // existing selection — add directly
+            addInteraction()
+          } else {
+            // create centered default selection and add immediately
+            const half = DEFAULT_SELECTION_LEN / 2
+            let rawStart = clampTime(t - half)
+            let rawEnd = clampTime(t + half)
+            let start = Number(rawStart.toFixed(3))
+            let end = Number(rawEnd.toFixed(3))
+            if (end <= start) {
+              end = Number(Math.min((Number.isFinite(maxDuration) ? maxDuration : start + 0.001), start + 0.001).toFixed(3))
+            }
+            addInteraction(undefined, { start, end })
+          }
+          closeContextMenu()
+        }
+      } else if (e.key === 'Backspace') {
+        // Backspace: prefer deleting the hovered/selected interaction.
+        // Priority:
+        // 1) hover tooltip (hoverInfo.visible && hoverInfo.index)
+        // 2) interaction context menu target (if open)
+        // 3) interaction overlapping currentTime
+        e.preventDefault()
+        if (hoverInfo.visible && typeof hoverInfo.index === 'number' && hoverInfo.index >= 0) {
+          removeInteraction(hoverInfo.index)
+        } else if (contextMenu.open && contextMenu.type === 'interaction') {
+          // contextMenu.targetIndex is the index to delete
+          removeInteraction(contextMenu.targetIndex)
+        } else {
+          const t = Number(currentTime || 0)
+          const idx = interactions.findIndex(it => it.start_time <= t && t <= it.end_time)
+          if (idx !== -1) removeInteraction(idx)
+        }
+        } else if (e.key && e.key.toLowerCase() === 'q') {
+          // Q: cancel current selection and close selection menu
+          e.preventDefault()
+          // clear selection range
+          setDragRange({ start: null, end: null })
+          // close any open selection/context menu
+          if (selectionMenuHideTimerRef.current !== null) {
+            window.clearTimeout(selectionMenuHideTimerRef.current)
+            selectionMenuHideTimerRef.current = null
+          }
+          setSelectionDropdownOpen(false)
+          // clear hover tooltip/timers and hide tooltip
+          if (hoverTooltipTimerRef.current !== null) {
+            window.clearTimeout(hoverTooltipTimerRef.current)
+            hoverTooltipTimerRef.current = null
+          }
+          setHoverInfo(h => ({ ...h, visible: false }))
+          closeContextMenu()
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
         seekVideo((currentTime || 0) - 1)
@@ -1688,9 +1984,11 @@ export default function App() {
         seekVideo((currentTime || 0) + 1)
       }
     }
-    window.addEventListener('keydown', onGlobalKey)
-    return () => window.removeEventListener('keydown', onGlobalKey)
-  }, [currentTime])
+    // Register in capture phase so we can prevent default browser behavior
+    // (like page scrolling on ArrowUp/ArrowDown) before it occurs.
+    window.addEventListener('keydown', onGlobalKey, true)
+    return () => window.removeEventListener('keydown', onGlobalKey, true)
+  }, [currentTime, duration, dragRange, actions, selectionMenuAction])
 
   async function exportJSON() {
   setSaveStatus({ status: 'saving', message: 'Saving…' })
@@ -2303,21 +2601,79 @@ export default function App() {
       </div>
 
       <div className="main">
-        <div className="left-col">
-          <PreviewPanel
-            title="Start Preview"
-            videoKey={`start-${selectedVideoFile}`}
-            videoRef={leftVideoRef}
-            src={videoSource}
-            timeLabel={`Start: ${dragRange.start !== null ? `${dragRange.start.toFixed(2)}s` : '-'}`}
-          />
-          <PreviewPanel
-            title="End Preview"
-            videoKey={`end-${selectedVideoFile}`}
-            videoRef={rightVideoRef}
-            src={videoSource}
-            timeLabel={`End: ${dragRange.end !== null ? `${dragRange.end.toFixed(2)}s` : '-'}`}
-          />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="left-col">
+            <PreviewPanel
+              title="Start Preview"
+              videoKey={`start-${selectedVideoFile}`}
+              videoRef={leftVideoRef}
+              src={videoSource}
+              timeLabel={`Start: ${dragRange.start !== null ? `${dragRange.start.toFixed(2)}s` : '-'}`}
+            />
+            <PreviewPanel
+              title="End Preview"
+              videoKey={`end-${selectedVideoFile}`}
+              videoRef={rightVideoRef}
+              src={videoSource}
+              timeLabel={`End: ${dragRange.end !== null ? `${dragRange.end.toFixed(2)}s` : '-'}`}
+            />
+          </div>
+
+          {/* Shortcuts block directly under left-col */}
+          <div className="shortcuts-below-left" style={{ padding: '10px 12px', borderTop: '1px solid rgba(148,163,184,0.04)', fontSize: 16, color: '#94a3b8' }}>
+            <div style={{ fontWeight: 600, color: '#cbd5e1', marginBottom: 20 }}>Keyboard Shortcuts</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '6px 8px', alignItems: 'center' }}>
+              <div>Play / Pause</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 14, fontWeight: 600 }}>Space</span>
+              </div>
+
+                  <div>Seek backward</div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontWeight: 800 }}>⬅</span>
+                  </div>
+
+              <div>Seek forward</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontWeight: 800 }}>➡</span>
+              </div>
+
+              <div>Set START</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 16, fontWeight: 600 }}>A</span>
+              </div>
+
+              <div>Set END</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 16, fontWeight: 600 }}>D</span>
+              </div>
+
+              <div>Open selection menu</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 16, fontWeight: 600 }}>S</span>
+              </div>
+
+              <div>Toggle "Contact"</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 16, fontWeight: 600 }}>W</span>
+              </div>
+
+              <div>Add action</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Enter</span>
+              </div>
+
+              <div>Delete action</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Backspace</span>
+              </div>
+              
+              <div>Cancel selection</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>Q</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="center-col">
           <VideoPanel
@@ -2354,7 +2710,7 @@ export default function App() {
           />
 
           <div className="waveform-block">
-            <div className="panel-title">Waveform</div>
+            {/* <div className="panel-title">Waveform</div> */}
             <WaveformTimeline
               audioSrc={videoSource}
               currentTime={currentTime}
@@ -2400,6 +2756,7 @@ export default function App() {
         <div
           className="context-menu context-menu-selection"
           ref={selectionMenuRef}
+          tabIndex={0}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
           onMouseEnter={() => {
@@ -2416,18 +2773,40 @@ export default function App() {
           <div className="context-menu-title">Label</div>
           <div className="selection-menu-row">
             <div className="selection-select">
-              <select
-                value={selectionMenuAction}
-                aria-label="Selection label"
-                onChange={e => setSelectionMenuAction(e.target.value)}
-                autoFocus
-              >
-                {actions.map(a => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-              </select>
+              <div className="custom-select custom-select--selection" onMouseDown={e => e.stopPropagation()}>
+                <button
+                  type="button"
+                  className="input custom-select-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded={selectionDropdownOpen}
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => {
+                        e.stopPropagation()
+                        setSelectionDropdownOpen(prev => !prev)
+                      }}
+                >
+                  <span className="custom-select-value">{selectionMenuAction || '—'}</span>
+                  <span className="custom-select-caret">▾</span>
+                </button>
+                    {selectionDropdownOpen && (
+                      <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                        {actions.map(a => (
+                          <button
+                            key={a}
+                            type="button"
+                            className={`custom-select-option${a === selectionMenuAction ? ' is-selected' : ''}`}
+                            onMouseDown={e => e.stopPropagation()}
+                            onClick={() => {
+                              setSelectionMenuAction(a)
+                              setSelectionDropdownOpen(false)
+                            }}
+                          >
+                            {a}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+              </div>
             </div>
             <label className="timeline-toggle selection-toggle">
               <span className="timeline-toggle-label">Contact</span>

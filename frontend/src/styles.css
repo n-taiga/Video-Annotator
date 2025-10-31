@@ -467,6 +467,13 @@ body {
 .custom-select--object { --dropdown-trigger-min-width: 140px; --dropdown-list-min-width: 200px; }
 .custom-select--video-header { --dropdown-trigger-min-width: 180px; --dropdown-list-min-width: 190px; }
 .custom-select--video-side { --dropdown-trigger-min-width: 200px; --dropdown-list-min-width: 260px; }
+/* Selection context menu (label picker) sizing. Adjust these variables to control
+   the trigger button width and the dropdown list min/max width for the label menu. */
+.custom-select--selection {
+  --dropdown-trigger-min-width: 140px;
+  --dropdown-list-min-width: 140px;
+  --dropdown-list-max-width: 360px;
+}
 .custom-select-option {
   text-align: left;
   padding: 8px 10px;

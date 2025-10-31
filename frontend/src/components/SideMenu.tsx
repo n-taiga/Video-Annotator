@@ -52,6 +52,64 @@ export default function SideMenu({ open, onClose, title = 'Menu', widthPx = 300,
             </div>
           )}
         </div>
+        <div className="side-menu-footer" style={{ padding: '12px 16px', borderTop: '1px solid rgba(148,163,184,0.06)', marginTop: 'auto' }}>
+          <div style={{ fontSize: 14, color: '#94a3b8', lineHeight: '1.4' }}>
+            <div style={{ fontWeight: 600, color: '#cbd5e1', marginBottom: 16 }}>Keyboard Shortcuts</div>
+
+            {/* Grid: label on left, key chip on right */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '6px 10px', alignItems: 'center' }}>
+              <div>Play / Pause</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Space</span>
+              </div>
+
+              <div>Seek backward</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontWeight: 700 }}>⬅</span>
+              </div>
+
+              <div>Seek forward</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 12, fontWeight: 700 }}>➡</span>
+              </div>
+
+              <div>Set START</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>A</span>
+              </div>
+
+              <div>Set END</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>D</span>
+              </div>
+
+              <div>Open selection menu</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>S</span>
+              </div>
+
+              <div>Toggle "Contact"</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>W</span>
+              </div>
+
+              <div>Add action</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Enter</span>
+              </div>
+
+              <div>Delete action</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Backspace</span>
+              </div>
+
+              <div>Cancel selection</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.12)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>Q</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </aside>
     </>
   )
