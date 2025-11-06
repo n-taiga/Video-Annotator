@@ -56,5 +56,6 @@
   "Click": "#60A5FA",
   "Move cursor": "#38BDF8",
   "Type": "#93C5FD",
-  "Turn knob": "#22C55E"
+  "Turn knob": "#22C55E",
+  "Void": "#E6B960"
 }
