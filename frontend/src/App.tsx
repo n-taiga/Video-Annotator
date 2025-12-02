@@ -13,6 +13,7 @@ import { mergeActions } from './utils/actions'
 import SideMenu from './components/SideMenu'
 import ConfigurationPanel from './components/ConfigurationPanel'
 import { cloneLabelDictionary } from './utils/labelConfig'
+import { getTrackletColor, MAX_TRACKLET_ID } from './utils/mask'
 
 type SaveStatus = {
   status: 'idle' | 'saving' | 'success' | 'error'
@@ -37,6 +38,8 @@ interface DragRange {
   start: number | null
   end: number | null
 }
+
+type ClickPoint = { id: string; x: number; y: number; normX: number; normY: number; time: number; frameIndex: number; label: number; objectId: number; src?: string; meta?: any }
 
 const DEFAULT_VIDEO_FPS = 30
 
@@ -136,9 +139,15 @@ export default function App() {
   const userSelectedScenarioRef = useRef(false)
   const userSelectedVideoRef = useRef(false)
   const [selectedVideoFile, setSelectedVideoFile] = useState('')
-  const [referenceVideoFile, setReferenceVideoFile] = useState('')
+  const [sessionId, setSessionId] = useState('')
+  // Support multiple reference videos
+  const [referenceVideoFiles, setReferenceVideoFiles] = useState<string[]>([])
+  const [referenceVisibility, setReferenceVisibility] = useState<Record<string, boolean>>({})
+  const referenceVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({})
   const [showReference, setShowReference] = useState(true)
-  const [isSwapped, setIsSwapped] = useState(false)
+  // If non-null, this file is currently swapped into the main player
+  const [swapRefFile, setSwapRefFile] = useState<string | null>(null)
+  const isSwapped = swapRefFile !== null
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ open: false })
   const [selectionMenuAction, setSelectionMenuAction] = useState(initialActionList[0] ?? '')
   const interactionMenuRef = useRef<HTMLDivElement | null>(null)
@@ -148,7 +157,10 @@ export default function App() {
   const mainVideoRef = useRef<HTMLVideoElement | null>(null)
   const leftVideoRef = useRef<HTMLVideoElement | null>(null)
   const rightVideoRef = useRef<HTMLVideoElement | null>(null)
-  const referenceVideoRef = useRef<HTMLVideoElement | null>(null)
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [clickPoints, setClickPoints] = useState<ClickPoint[]>([])
+  const [activeTrackletId, setActiveTrackletId] = useState<number>(0)
+  // (multiple reference refs stored in referenceVideoRefs)
 
   // Picture-in-Picture overlay position state and drag helpers
   const PIP_WIDTH = 320
@@ -177,6 +189,12 @@ export default function App() {
   const SELECTION_MENU_OPEN_DELAY = 500
   const SELECTION_MENU_HIDE_DELAY = 1000
 
+  useEffect(() => {
+    const blockContextMenu = (event: MouseEvent) => event.preventDefault()
+    document.addEventListener('contextmenu', blockContextMenu)
+    return () => document.removeEventListener('contextmenu', blockContextMenu)
+  }, [])
+
   const clearSelectionMenuHideTimer = () => {
     if (selectionMenuHideTimerRef.current !== null) {
       window.clearTimeout(selectionMenuHideTimerRef.current)
@@ -192,9 +210,10 @@ export default function App() {
   const [contact, setContact] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ status: 'idle' })
   const [hoverInfo, setHoverInfo] = useState<{ visible: boolean; x: number; y: number; label: string; color: string; index: number | null }>({ visible: false, x: 0, y: 0, label: '', color: '#94a3b8', index: null })
-  // Undo/Redo stacks for interactions
-  const [undoStack, setUndoStack] = useState<Interaction[][]>([])
-  const [redoStack, setRedoStack] = useState<Interaction[][]>([])
+  // Unified history stack (snapshots of interactions + clickPoints)
+  type Snapshot = { interactions: Interaction[]; clickPoints: ClickPoint[] }
+  const [historyStack, setHistoryStack] = useState<Snapshot[]>([])
+  const [historyRedoStack, setHistoryRedoStack] = useState<Snapshot[]>([])
   // Audio controls for main video
   const [volume, setVolume] = useState(1) // 0.0 - 1.0
   const [muted, setMuted] = useState(false)
@@ -219,13 +238,53 @@ export default function App() {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [addingNewObject, setAddingNewObject] = useState(false)
 
+  const effectiveFps = useMemo(() => {
+    const fps = videoDetails.fps
+    if (typeof fps === 'number' && Number.isFinite(fps) && fps > 0) {
+      return fps
+    }
+    return DEFAULT_VIDEO_FPS
+  }, [videoDetails.fps])
+
+  const currentFrameIndex = useMemo(() => {
+    const t = Number.isFinite(currentTime) ? currentTime : 0
+    return Math.max(0, Math.round(t * effectiveFps))
+  }, [currentTime, effectiveFps])
+
+  const currentFramePoints = useMemo(() => {
+    const filtered = clickPoints.filter(point => {
+      if (typeof point.frameIndex !== 'number') return false
+      return Math.abs(point.frameIndex - currentFrameIndex) <= 4
+    })
+    // console.info('currentFramePoints', {
+    //   frameIndex: currentFrameIndex,
+    //   count: filtered.length,
+    //   points: filtered
+    // })
+    return filtered
+  }, [clickPoints, currentFrameIndex])
+
+  const getFrameIndexForTime = useCallback((time: number) => {
+    if (!Number.isFinite(time)) return 0
+    return Math.max(0, Math.round(time * effectiveFps))
+  }, [effectiveFps])
+
+  const cycleActiveTracklet = useCallback(() => {
+    setActiveTrackletId(prev => {
+      const next = prev + 1
+      return next > MAX_TRACKLET_ID ? 0 : next
+    })
+  }, [])
+
+  const trackletColorFor = useCallback((objectId: number | null | undefined) => getTrackletColor(objectId), [])
+
   const applyActionLabelDictionary = useCallback((dictionary: ActionLabelDictionary) => {
     let sanitized = cloneLabelDictionary(dictionary)
     if (Object.keys(sanitized).length === 0) {
       sanitized = cloneLabelDictionary(initialLabelDictionary)
     }
     const actionList = Object.keys(sanitized)
-  baseActionsRef.current = actionList
+    baseActionsRef.current = actionList
     setActions(actionList)
     setLabelColors(() => ensureLabelColors(actionList, sanitized))
     setSelectedAction(prev => (actionList.includes(prev) ? prev : actionList[0] ?? ''))
@@ -324,24 +383,36 @@ export default function App() {
           const opts = meta.target_videos.map((p: string) => String(p).replace(/^\//, ''))
           setVideoOptions(opts)
           setSelectedVideoFile(prev => (opts.includes(prev) ? prev : opts[0]))
-          // store reference video (if provided) as a relative path
-          if (typeof meta.reference_video === 'string' && meta.reference_video.trim()) {
-            setReferenceVideoFile(String(meta.reference_video).replace(/^\//, ''))
+          // store reference videos (if provided) as relative paths
+          // Accept either a single string or an array of strings
+          const ref = (meta as any).reference_video
+          let refArr: string[] = []
+          if (typeof ref === 'string' && ref.trim()) {
+            refArr = [String(ref).replace(/^\//, '')]
+          } else if (Array.isArray(ref) && ref.length > 0) {
+            refArr = ref
+              .map((p: any) => (typeof p === 'string' ? String(p).replace(/^\//, '') : ''))
+              .filter((p: string) => p)
           } else {
-            setReferenceVideoFile('')
+            refArr = []
           }
+          setReferenceVideoFiles(refArr)
+          // initialize visibility map (default: visible)
+          const vis: Record<string, boolean> = {}
+          refArr.forEach(f => (vis[f] = true))
+          setReferenceVisibility(vis)
           // Prevent the global /videos fetch from overwriting this metadata-driven list
           setRestrictToMetadata(true)
         } else {
           // fallback to server-wide videos
-          setReferenceVideoFile('')
+          setReferenceVideoFiles([])
           setRestrictToMetadata(false)
-          void fetchVideos().then(files => setVideoOptions(files)).catch(() => {})
+          void fetchVideos().then(files => setVideoOptions(files)).catch(() => { })
         }
       })
       .catch(() => {
         setRestrictToMetadata(false)
-        void fetchVideos().then(files => setVideoOptions(files)).catch(() => {})
+        void fetchVideos().then(files => setVideoOptions(files)).catch(() => { })
       })
     return () => {
       cancelled = true
@@ -365,7 +436,7 @@ export default function App() {
         if (!sNode || !(e.target instanceof Node) || !sNode.contains(e.target)) {
           setScenarioDropdownOpen(false)
           setRestrictToMetadata(false)
-          setReferenceVideoFile('')
+          setReferenceVideoFiles([])
         }
       }
       // header video dropdown
@@ -398,9 +469,9 @@ export default function App() {
       ? `${(dragRange.end - dragRange.start).toFixed(2)}s`
       : '-'
   const videoSource = selectedVideoFile ? buildApiUrl(`/video/${encodeURIComponent(selectedVideoFile)}`) : ''
-  const referenceVideoSource = referenceVideoFile ? buildApiUrl(`/video/${encodeURIComponent(referenceVideoFile)}`) : ''
-  const mainSrc = isSwapped ? referenceVideoSource : videoSource
-  const pipSrc = isSwapped ? videoSource : referenceVideoSource
+  const getSourceForFile = (f: string) => (f ? buildApiUrl(`/video/${encodeURIComponent(f)}`) : '')
+  // referenceVideoFiles contains the filenames (relative paths). Use getSourceForFile(file) when needed.
+  const mainSrc = swapRefFile ? getSourceForFile(swapRefFile) : videoSource
   const durationDisplay = buildDurationDisplay(Number.isFinite(duration) && duration > 0 ? duration : null)
   const resolutionDisplay =
     videoDetails.width !== null && videoDetails.height !== null
@@ -452,7 +523,9 @@ export default function App() {
   useEffect(() => {
     // Apply playbackRate to all rendered video elements so PiP and previews
     // match the main video's speed.
-    const refs = [mainVideoRef.current, referenceVideoRef.current, leftVideoRef.current, rightVideoRef.current]
+    const refs: Array<HTMLVideoElement | null> = [mainVideoRef.current, leftVideoRef.current, rightVideoRef.current]
+    // include all reference video elements
+    Object.values(referenceVideoRefs.current || {}).forEach(r => refs.push(r))
     refs.forEach(v => {
       if (!v) return
       try {
@@ -563,6 +636,13 @@ export default function App() {
 
   const stripExtension = (file: string) => file.replace(/\.[^/.]+$/, '')
 
+  const createSessionId = (file: string) => {
+    const baseName = stripExtension((file || '').trim()) || 'session'
+    const stamp = new Date().toISOString().replace(/[:.]/g, '')
+    const random = Math.random().toString(36).slice(2, 8)
+    return `${baseName}--${stamp}-${random}`
+  }
+
   useEffect(() => {
     let cancelled = false
 
@@ -596,14 +676,21 @@ export default function App() {
   }, [selectedVideoFile, restrictToMetadata])
 
   useEffect(() => {
-    if (!selectedVideoFile) return
+    if (!selectedVideoFile) {
+      setSessionId('')
+      return
+    }
     // Reset any swap when selecting a new main video
-    setIsSwapped(false)
+    setSwapRefFile(null)
     const newId = stripExtension(selectedVideoFile)
     setVideoId(prev => (prev === newId ? prev : newId))
+    setActiveTrackletId(0)
+    const nextSessionId = createSessionId(selectedVideoFile)
+    setSessionId(nextSessionId)
     setInteractions([])
-    setUndoStack([])
-    setRedoStack([])
+    // Clear unified history when selecting a new video
+    setHistoryStack([])
+    setHistoryRedoStack([])
     setDragRange({ start: null, end: null })
     // Clear task input when a new video is selected. It will be populated
     // if a saved annotation supplies a task. This ensures that when no
@@ -713,11 +800,11 @@ export default function App() {
           return
         }
         if (cancelled || !data) return
-  // Populate form fields if present. Do not overwrite an explicitly
-  // cleared scenario selection by the user (userClearedScenario). Also
-  // if the user explicitly selected the video (wasUserSelected), do not
-  // overwrite their choice.
-  if (typeof data.scenario_id === 'string') {
+        // Populate form fields if present. Do not overwrite an explicitly
+        // cleared scenario selection by the user (userClearedScenario). Also
+        // if the user explicitly selected the video (wasUserSelected), do not
+        // overwrite their choice.
+        if (typeof data.scenario_id === 'string') {
           // Only set scenario from loaded annotation when it's allowed by
           // user state and when it matches known metadata (or metadata
           // is not available yet).
@@ -730,10 +817,10 @@ export default function App() {
           else if (typeof data.video_filename === 'string') setVideoId(stripExtension(String(data.video_filename).split('/').pop() || ''))
         }
         // Clear the user-selected flag after processing
-  userSelectedVideoRef.current = false
-  userSelectedScenarioRef.current = false
-  if (typeof data.task === 'string') setTaskLabel(data.task)
-  else setTaskLabel('')
+        userSelectedVideoRef.current = false
+        userSelectedScenarioRef.current = false
+        if (typeof data.task === 'string') setTaskLabel(data.task)
+        else setTaskLabel('')
         if (typeof data.environment === 'string') setEnvironment(data.environment)
         if (typeof data.object === 'string') setObjectName(data.object)
         if (Array.isArray(data.actions) && data.actions.length > 0) {
@@ -764,11 +851,10 @@ export default function App() {
       setVideoDetails(prev => {
         const width = v.videoWidth || null
         const height = v.videoHeight || null
-        const extracted = tryExtractFrameRate(v)
-        const fpsSource: FpsSource = extracted ? 'detected' : prev.fps != null ? prev.fpsSource : 'assumed'
+        // Temporarily disable dynamic FPS detection and rely on fallback FPS only
         const fallbackFps = prev.fps != null ? prev.fps : DEFAULT_VIDEO_FPS
-        const fpsValue = extracted ?? fallbackFps
-        const normalizedFps = fpsValue != null && Number.isFinite(fpsValue) ? Math.round(fpsValue * 100) / 100 : null
+        const normalizedFps = Number.isFinite(fallbackFps) ? Math.round(fallbackFps * 100) / 100 : null
+        const fpsSource: FpsSource = 'assumed'
         if (prev.width === width && prev.height === height && prev.fps === normalizedFps && prev.fpsSource === fpsSource) {
           return prev
         }
@@ -793,15 +879,18 @@ export default function App() {
       refreshVideoMeta()
     }
     const onMainPlayForRef = () => {
-      const rv = referenceVideoRef.current
-      if (!rv) return
-      try { rv.currentTime = v.currentTime } catch (_e) {}
-      rv.play().catch(() => {})
+      // Sync and play all reference videos
+      Object.values(referenceVideoRefs.current || {}).forEach(rv => {
+        if (!rv) return
+        try { rv.currentTime = v.currentTime } catch (_e) { }
+        rv.play().catch(() => { })
+      })
     }
     const onMainPauseForRef = () => {
-      const rv = referenceVideoRef.current
-      if (!rv) return
-      rv.pause()
+      Object.values(referenceVideoRefs.current || {}).forEach(rv => {
+        if (!rv) return
+        try { rv.pause() } catch (_e) { }
+      })
     }
     v.addEventListener('loadedmetadata', onLoaded)
     v.addEventListener('timeupdate', onTime)
@@ -908,11 +997,11 @@ export default function App() {
     const totalWidth = Math.max(1, timelineRef.current.clientWidth)
     const margin = { left: 10, right: 30 }
     const innerWidth = Math.max(1, totalWidth - margin.left - margin.right)
-  const height = 120
-  // Adjustable display constants for the blue action bars
-  const ACTION_BAR_HEIGHT = 18
-  const ACTION_BAR_Y = 18 // ensure it stays well above the brush extent (currently starts at y=70)
-  const ACTION_BAR_RADIUS = 8
+    const height = 120
+    // Adjustable display constants for the blue action bars
+    const ACTION_BAR_HEIGHT = 18
+    const ACTION_BAR_Y = 18 // ensure it stays well above the brush extent (currently starts at y=70)
+    const ACTION_BAR_RADIUS = 8
     const svg = d3.select(svgRef.current)
     svg.attr('width', totalWidth).attr('height', height)
     svg.selectAll('*').remove()
@@ -1225,8 +1314,26 @@ export default function App() {
     const menuEl =
       contextMenu.type === 'interaction' ? interactionMenuRef.current : selectionMenuRef.current
     if (!menuEl) return
-    menuEl.style.top = `${contextMenu.y}px`
-    menuEl.style.left = `${contextMenu.x}px`
+    // Position menu but clamp to viewport so it does not force scrolling.
+    const spacing = 8
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    // Use getBoundingClientRect after making it visible to measure size.
+    menuEl.style.visibility = 'hidden'
+    menuEl.style.display = 'block'
+    menuEl.style.top = '0px'
+    menuEl.style.left = '0px'
+    // Allow layout to update
+    const rect = menuEl.getBoundingClientRect()
+    let top = contextMenu.y
+    let left = contextMenu.x
+    if (top + rect.height + spacing > vh) top = Math.max(spacing, vh - rect.height - spacing)
+    if (left + rect.width + spacing > vw) left = Math.max(spacing, vw - rect.width - spacing)
+    if (top < spacing) top = spacing
+    if (left < spacing) left = spacing
+    menuEl.style.top = `${Math.round(top)}px`
+    menuEl.style.left = `${Math.round(left)}px`
+    menuEl.style.visibility = ''
   }, [contextMenu])
 
   // When the selection context menu opens, ensure it receives keyboard
@@ -1241,9 +1348,20 @@ export default function App() {
     // Focus on next tick so the DOM is fully attached.
     const t = window.setTimeout(() => {
       try {
+        // Try to focus without causing the browser to scroll the page.
+        // Modern browsers support focus({ preventScroll: true }). Fall back
+        // to plain focus() if not available.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(node as any).focus()
-      } catch (_e) {}
+        const anyNode = node as any
+        if (typeof anyNode.focus === 'function') {
+          try {
+            anyNode.focus({ preventScroll: true })
+          } catch (_err) {
+            // older browsers may not support the option
+            anyNode.focus()
+          }
+        }
+      } catch (_e) { }
     }, 0)
     return () => window.clearTimeout(t)
   }, [contextMenu])
@@ -1261,21 +1379,375 @@ export default function App() {
     // scrub actions keep both videos aligned. Ignore errors if the ref
     // video isn't ready or not present.
     try {
-      const ref = referenceVideoRef.current
-      if (ref && typeof ref.currentTime === 'number') {
-        // Only set when a reference video exists
-        ref.currentTime = clamped
-      }
+      Object.values(referenceVideoRefs.current || {}).forEach(ref => {
+        if (!ref) return
+        try {
+          if (typeof ref.currentTime === 'number') ref.currentTime = clamped
+        } catch (_e) {
+          // ignore
+        }
+      })
     } catch (_err) {
       // ignore - setting currentTime can throw if not yet loaded
+    }
+  }
+
+  // --- Capture current frame to an offscreen canvas at intrinsic resolution ---
+  async function captureVideoFrameToCanvas(video: HTMLVideoElement): Promise<HTMLCanvasElement> {
+    if (!video) throw new Error('No video element')
+    if (!video.videoWidth || !video.videoHeight) {
+      // wait for metadata if possible
+      await new Promise<void>(resolve => {
+        const onLoaded = () => { resolve() }
+        video.addEventListener('loadedmetadata', onLoaded, { once: true })
+        // fallback timeout
+        setTimeout(() => resolve(), 500)
+      })
+    }
+    const w = video.videoWidth || 640
+    const h = video.videoHeight || 360
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    const ctx = c.getContext('2d')
+    if (!ctx) throw new Error('2D context not available')
+    ctx.drawImage(video, 0, 0, w, h)
+    return c
+  }
+
+  // Convert canvas -> base64 (no data: prefix)
+  function canvasToBase64(canvas: HTMLCanvasElement): Promise<string> {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (!blob) return reject(new Error('toBlob failed'))
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          const dataUrl = reader.result as string
+          resolve(dataUrl.split(',')[1])
+        }
+        reader.readAsDataURL(blob)
+      }, 'image/png')
+    })
+  }
+
+  // Send image+points to predict endpoint and draw returned PNG mask into overlayCanvas
+  async function postPredictAndDraw(frameIndex: number, framePoints: ClickPoint[], baseCanvas: HTMLCanvasElement, overlayCanvas: HTMLCanvasElement | null, opts: { endpoint?: string; timeoutMs?: number } = {}) {
+    const endpoint = opts.endpoint ?? buildApiUrl('/predict')
+    const controller = new AbortController()
+    const timeoutId = opts.timeoutMs ? window.setTimeout(() => controller.abort(), opts.timeoutMs) : undefined
+
+    try {
+      // const base64 = await canvasToBase64(baseCanvas)
+      const grouped = new Map<number, ClickPoint[]>()
+      framePoints.forEach(point => {
+        const key = Number.isFinite(point.objectId) ? point.objectId : 0
+        const list = grouped.get(key)
+        if (list) {
+          list.push(point)
+        } else {
+          grouped.set(key, [point])
+        }
+      })
+
+      const objects = Array.from(grouped.entries()).map(([objectId, pointsForObject]) => {
+        const latest = pointsForObject[pointsForObject.length - 1]
+        return {
+          objectId,
+          points: pointsForObject.map(p => ({
+            id: p.id,
+            x: p.normX,
+            y: p.normY,
+            label: typeof p.label === 'number' ? p.label : 1
+          })),
+          meta: {
+            lastTimestamp: typeof latest?.time === 'number' ? latest.time : undefined,
+            lastSource: latest?.src,
+            frameIndex,
+            objectId
+          }
+        }
+      })
+
+      let activeSessionId = sessionId
+      if (!activeSessionId) {
+        activeSessionId = createSessionId(selectedVideoFile || 'session')
+        setSessionId(activeSessionId)
+      }
+
+      const body = {
+        sessionId: activeSessionId,
+        frameIndex,
+        videoPath: selectedVideoFile,
+        objects,
+        meta: {
+          pointCount: framePoints.length,
+          objectCount: objects.length
+        }
+      }
+      if (typeof console.groupCollapsed === 'function') {
+        console.groupCollapsed(`Predict payload | session=${body.sessionId} frame=${body.frameIndex} objects=${objects.length} points=${framePoints.length}`)
+        console.info('Session', body.sessionId)
+        console.info('Meta', body.meta)
+        console.info('Video Path', body.videoPath)
+        body.objects.forEach((obj, index) => {
+          console.groupCollapsed(`Object[${index}] id=${obj.objectId} points=${obj.points.length}`)
+          if (typeof console.table === 'function') {
+            console.table(obj.points)
+          } else {
+            console.info('Points', obj.points)
+          }
+          console.info('Meta', obj.meta)
+          console.groupEnd()
+        })
+        console.groupEnd()
+      } else {
+        console.info('Predict payload', {
+          sessionId: body.sessionId,
+          frameIndex: body.frameIndex,
+          videoPath: body.videoPath,
+          objects: body.objects.map(obj => ({
+            objectId: obj.objectId,
+            points: obj.points,
+            pointCount: obj.points.length,
+            meta: obj.meta
+          })),
+          meta: body.meta,
+          image: '[base64 omitted]'
+        })
+      }
+
+      if (!framePoints.length && overlayCanvas) {
+        overlayCanvas.width = baseCanvas.width
+        overlayCanvas.height = baseCanvas.height
+        const clearCtx = overlayCanvas.getContext('2d')
+        if (clearCtx) {
+          clearCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
+        }
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      })
+
+      if (!res.ok) throw new Error(`predict failed: ${res.status} ${res.statusText}`)
+
+      const headerEntries = Array.from(res.headers.entries())
+      const headerSnapshot = Object.fromEntries(headerEntries)
+
+      // Prepare overlay and mask canvases
+      if (!overlayCanvas) return { success: false, error: 'no overlay canvas' }
+      overlayCanvas.width = baseCanvas.width
+      overlayCanvas.height = baseCanvas.height
+      const ctx = overlayCanvas.getContext('2d')
+      if (!ctx) return { success: false, error: 'no 2d context' }
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
+
+      const maskCanvas = document.createElement('canvas')
+      maskCanvas.width = overlayCanvas.width
+      maskCanvas.height = overlayCanvas.height
+      const mctx = maskCanvas.getContext('2d')
+      if (!mctx) return { success: false, error: 'no mask 2d context' }
+      mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height)
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase()
+      if (contentType.includes('application/json')) {
+        // New JSON response: { sessionId, frameIndex, results: [{ mask: { data: '<base64>' }, ... }, ... ], meta }
+        const json = await res.json()
+        // Log the full JSON response for debugging/inspection
+        try {
+          if (typeof console.groupCollapsed === 'function') {
+            console.groupCollapsed(`Predict JSON response | session=${json?.sessionId} frame=${json?.frameIndex}`)
+            console.log(json)
+            console.groupEnd()
+          } else {
+            console.log('Predict JSON response', json)
+          }
+        } catch (e) {
+          // ignore logging errors
+        }
+        const results = Array.isArray(json?.results) ? json.results : []
+        for (const r of results) {
+          const b64 = r?.mask?.data
+          if (!b64) continue
+          // Decode base64 -> Uint8Array
+          try {
+            const binary = atob(b64)
+            const len = binary.length
+            const bytes = new Uint8Array(len)
+            for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i)
+            const maskBlob = new Blob([bytes], { type: 'image/png' })
+            const imgBitmap = await createImageBitmap(maskBlob)
+            mctx.drawImage(imgBitmap, 0, 0, maskCanvas.width, maskCanvas.height)
+          } catch (e) {
+            console.warn('Failed to decode mask from JSON result', e)
+            continue
+          }
+        }
+      } else {
+        // Fallback: server returned raw PNG
+        const blob = await res.blob()
+        const imgBitmap = await createImageBitmap(blob)
+        mctx.drawImage(imgBitmap, 0, 0, maskCanvas.width, maskCanvas.height)
+      }
+
+      // 1) Fill the masked area with a translucent color
+      ctx.globalCompositeOperation = 'source-over'
+      // Draw mask as the base (so alpha is present)
+      ctx.drawImage(maskCanvas, 0, 0)
+      // Colorize only inside mask using source-in
+      ctx.globalCompositeOperation = 'source-in'
+      ctx.fillStyle = 'rgba(0, 89, 255, 0.32)' // semi-transparent fill
+      ctx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height)
+      ctx.globalCompositeOperation = 'source-over'
+
+      // 2) Compute and draw an outline around mask edges
+      try {
+        const w = maskCanvas.width
+        const h = maskCanvas.height
+        const src = mctx.getImageData(0, 0, w, h)
+        const srcData = src.data
+        const out = mctx.createImageData(w, h)
+        const outData = out.data
+        // Simple 4-neighbor edge detection on alpha channel
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4
+            const a = srcData[i + 3]
+            if (a > 128) {
+              // check neighbors for transparency
+              let isEdge = false
+              if (x > 0 && srcData[i - 4 + 3] <= 128) isEdge = true
+              else if (x < w - 1 && srcData[i + 4 + 3] <= 128) isEdge = true
+              else if (y > 0 && srcData[i - w * 4 + 3] <= 128) isEdge = true
+              else if (y < h - 1 && srcData[i + w * 4 + 3] <= 128) isEdge = true
+              if (isEdge) {
+                // set outline pixel (opaque)
+                outData[i + 0] = 255 // R
+                outData[i + 1] = 255 // G (white border) - change if desired
+                outData[i + 2] = 255 // B
+                outData[i + 3] = 255 // alpha
+              }
+            }
+          }
+        }
+        // Draw the outline on top with desired stroke color and thickness
+        // We can draw the raw pixel outline first, then apply a colored stroke
+        // by tinting the outline image data onto the overlay.
+        // Put the outline (white) onto an intermediate canvas for coloring
+        const outlineCanvas = document.createElement('canvas')
+        outlineCanvas.width = w
+        outlineCanvas.height = h
+        const octx = outlineCanvas.getContext('2d')
+        if (octx) {
+          octx.putImageData(out, 0, 0)
+          // Optionally thicken the outline by drawing it multiple times slightly offset
+          // and then tint it to chosen color
+          ctx.save()
+          ctx.globalCompositeOperation = 'source-over'
+          // tint: draw outline as mask then color it
+          // draw the white outline as a mask
+          ctx.drawImage(outlineCanvas, 0, 0)
+          // colorize the outline pixels
+          ctx.globalCompositeOperation = 'source-in'
+          ctx.fillStyle = 'rgba(255,255,255,0.95)'
+          // Use near-opaque white; developer can change to colored border if desired
+          ctx.fillRect(0, 0, w, h)
+          ctx.restore()
+          // For better visibility, draw a 1px stroke by scaling and compositing
+          // Draw the outline again slightly expanded to simulate thickness
+          ctx.save()
+          ctx.filter = 'blur(0.5px)'
+          ctx.globalCompositeOperation = 'source-over'
+          ctx.drawImage(outlineCanvas, 0, 0)
+          ctx.filter = 'none'
+          ctx.restore()
+        }
+      } catch (e) {
+        // non-fatal if edge-detection fails
+        console.warn('Outline generation failed', e)
+      }
+
+      return { success: true }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return { success: false, aborted: true }
+      console.error(err)
+      return { success: false, error: String(err) }
+    } finally {
+      if (typeof timeoutId === 'number') window.clearTimeout(timeoutId)
+    }
+  }
+
+  // Handler wired to VideoPanel's onVideoClick
+  async function handleVideoClick(info: any) {
+    const v = mainVideoRef.current
+    const overlay = overlayCanvasRef.current
+    if (!v) return
+    try {
+      // Append new point to list
+      const label: number = typeof info.label === 'number' ? info.label : 1
+      const clickTime = typeof info.time === 'number' && Number.isFinite(info.time) ? info.time : currentTime
+      const frameIndex = typeof info.frameIndex === 'number' && Number.isFinite(info.frameIndex)
+        ? Math.max(0, Math.round(info.frameIndex))
+        : getFrameIndexForTime(clickTime)
+      const objectId = Math.max(0, Math.min(MAX_TRACKLET_ID, Math.trunc(activeTrackletId)))
+      const newPoint: ClickPoint = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        x: info.localX ?? info.x,
+        y: info.localY ?? info.y,
+        normX: info.normX,
+        normY: info.normY,
+        time: clickTime,
+        frameIndex,
+        label,
+        objectId,
+        src: info.src,
+        meta: info.meta
+      }
+      const nextPoints = [...clickPoints, newPoint]
+      const framePoints = nextPoints.filter(point => point.frameIndex === frameIndex)
+      // push previous unified snapshot for undo and clear redo stack
+      pushHistory(interactions, clickPoints)
+      setHistoryRedoStack([])
+      setClickPoints(nextPoints)
+
+      const baseCanvas = await captureVideoFrameToCanvas(v)
+      const result = await postPredictAndDraw(frameIndex, framePoints, baseCanvas, overlay, { timeoutMs: 20000 })
+      if (!result.success) console.error('predict draw failed', result)
+    } catch (err) {
+      console.error('handleVideoClick error', err)
+    }
+  }
+
+  // Remove a click point by id and re-run prediction with remaining points
+  async function removeClickPoint(id: string) {
+    const nextPoints = clickPoints.filter(p => p.id !== id)
+    // push previous unified snapshot for undo and clear redo stack
+    pushHistory(interactions, clickPoints)
+    setHistoryRedoStack([])
+    setClickPoints(nextPoints)
+    const v = mainVideoRef.current
+    const overlay = overlayCanvasRef.current
+    if (!v) return
+    try {
+      const baseCanvas = await captureVideoFrameToCanvas(v)
+      const frameIndex = getFrameIndexForTime(currentTimeRef.current ?? currentTime)
+      const framePoints = nextPoints.filter(point => point.frameIndex === frameIndex)
+      const result = await postPredictAndDraw(frameIndex, framePoints, baseCanvas, overlay, { timeoutMs: 20000 })
+      if (!result.success) console.error('predict draw failed', result)
+    } catch (err) {
+      console.error('removeClickPoint error', err)
     }
   }
 
   function updateInteractionLabel(idx: number, label: string) {
     setInteractions(prev => {
       const next = prev.map((it, i) => (i === idx ? { ...it, action_label: label } : it))
-      pushUndo(prev)
-      setRedoStack([])
+      // record previous snapshot (interactions changed, clickPoints unchanged)
+      pushHistory(prev, clickPoints)
+      setHistoryRedoStack([])
       return next
     })
   }
@@ -1466,8 +1938,9 @@ export default function App() {
     const prevActionsList = [...actions]
     const prevLabelMap = { ...labelColors }
     const prevInteractions = interactions.map(item => ({ ...item }))
-    const prevUndoStack = undoStack.map(history => history.map(item => ({ ...item })))
-    const prevRedoStack = redoStack.map(history => history.map(item => ({ ...item })))
+    // clone unified history stacks so we can restore on error
+    const prevHistoryStack = historyStack.map(s => cloneSnapshot(s))
+    const prevHistoryRedoStack = historyRedoStack.map(s => cloneSnapshot(s))
     const prevSelected = selectedAction
     const prevSelectionMenu = selectionMenuAction
     const prevHover = hoverInfo
@@ -1494,8 +1967,9 @@ export default function App() {
       return ensureLabelColors(nextOrder, next)
     })
     setInteractions(prev => prev.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item)))
-    setUndoStack(prev => prev.map(history => history.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item))))
-    setRedoStack(prev => prev.map(history => history.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item))))
+    // Update action_label inside stored snapshots
+    setHistoryStack(prev => prev.map(s => ({ ...s, interactions: s.interactions.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item)) })))
+    setHistoryRedoStack(prev => prev.map(s => ({ ...s, interactions: s.interactions.map(item => (item.action_label === current ? { ...item, action_label: trimmed } : item)) })))
     setSelectedAction(prev => (prev === current ? trimmed : prev))
     setSelectionMenuAction(prev => (prev === current ? trimmed : prev))
     setHoverInfo(prev => (prev.label === current ? { ...prev, label: trimmed, color: renamedColor } : prev))
@@ -1510,15 +1984,15 @@ export default function App() {
       setActions(prevActionsList)
       setLabelColors(ensureLabelColors(prevBaseActions, prevLabelMap))
       setInteractions(prevInteractions)
-      setUndoStack(prevUndoStack)
-      setRedoStack(prevRedoStack)
+      setHistoryStack(prevHistoryStack)
+      setHistoryRedoStack(prevHistoryRedoStack)
       setSelectedAction(prevSelected)
       setSelectionMenuAction(prevSelectionMenu)
       setHoverInfo(prevHover)
       setActionLabelError(err instanceof Error ? err.message : 'Failed to rename action label.')
       return false
     }
-  }, [actions, hoverInfo, interactions, labelColors, loadingActionLabels, persistActionLabels, redoStack, savingActionLabels, selectedAction, selectionMenuAction, undoStack])
+  }, [actions, hoverInfo, interactions, labelColors, loadingActionLabels, persistActionLabels, historyRedoStack, savingActionLabels, selectedAction, selectionMenuAction, historyStack])
 
   const handleRenameObject = useCallback(async (previousName: string, rawNextName: string): Promise<boolean> => {
     if (loadingObjectLabels || savingObjectLabels) return false
@@ -1590,8 +2064,8 @@ export default function App() {
     try {
       await persistActionLabels(nextDictionary)
       setInteractions(prev => prev.filter(interaction => interaction.action_label !== trimmed))
-      setUndoStack([])
-      setRedoStack([])
+      setHistoryStack([])
+      setHistoryRedoStack([])
       setContextMenu({ open: false })
       setHoverInfo(info => (info.visible && info.label === trimmed ? { ...info, visible: false } : info))
     } catch (err) {
@@ -1636,8 +2110,9 @@ export default function App() {
     }
     setInteractions(prev => {
       const next = [...prev, inter]
-      pushUndo(prev)
-      setRedoStack([])
+      // record previous snapshot for unified history
+      pushHistory(prev, clickPoints)
+      setHistoryRedoStack([])
       return next
     })
     setDragRange({ start: null, end: null })
@@ -1646,8 +2121,9 @@ export default function App() {
   function removeInteraction(idx: number) {
     setInteractions(prev => {
       const next = prev.filter((_, i) => i !== idx)
-      pushUndo(prev)
-      setRedoStack([])
+      // record previous snapshot for unified history
+      pushHistory(prev, clickPoints)
+      setHistoryRedoStack([])
       return next
     })
     // Hide any hover tooltip and close interaction context menu if it
@@ -1667,31 +2143,89 @@ export default function App() {
     return list.map(it => ({ ...it }))
   }
 
-  function pushUndo(current: Interaction[]) {
-    setUndoStack(stack => [...stack, cloneInteractions(current)])
+  function cloneClickPoints(list: ClickPoint[]): ClickPoint[] {
+    return list.map(p => ({ ...p }))
+  }
+
+  function cloneSnapshot(s: Snapshot): Snapshot {
+    return { interactions: cloneInteractions(s.interactions), clickPoints: cloneClickPoints(s.clickPoints) }
+  }
+
+  // Push a unified snapshot onto history stack. Optionally pass the
+  // previous interactions/clickPoints to record the state before a change.
+  function pushHistory(prevInteractions?: Interaction[], prevClickPoints?: ClickPoint[]) {
+    const inter = prevInteractions ? cloneInteractions(prevInteractions) : cloneInteractions(interactions)
+    const clicks = prevClickPoints ? cloneClickPoints(prevClickPoints) : cloneClickPoints(clickPoints)
+    const snapshot: Snapshot = { interactions: inter, clickPoints: clicks }
+    // avoid pushing duplicate consecutive snapshots
+    setHistoryStack(stack => {
+      const last = stack.length ? stack[stack.length - 1] : null
+      try {
+        if (last && JSON.stringify(last) === JSON.stringify(snapshot)) {
+          return stack
+        }
+      } catch (_e) {
+        // If stringify fails for some reason, fall back to pushing
+      }
+      return [...stack, snapshot]
+    })
   }
 
   function undo() {
-    setUndoStack(stack => {
+    setHistoryStack(stack => {
       if (stack.length === 0) return stack
-      setInteractions(current => {
-        const prev = stack[stack.length - 1]
-        setRedoStack(r => [...r, cloneInteractions(current)])
-        return cloneInteractions(prev)
-      })
-      return stack.slice(0, -1)
+      const prevStack = [...stack]
+      const snapshot = prevStack.pop()!
+      // capture current snapshot for redo
+      const currentSnapshot: Snapshot = { interactions: cloneInteractions(interactions), clickPoints: cloneClickPoints(clickPoints) }
+      setHistoryRedoStack(r => [...r, cloneSnapshot(currentSnapshot)])
+      // restore snapshot
+      setInteractions(() => cloneInteractions(snapshot.interactions))
+      setClickPoints(() => cloneClickPoints(snapshot.clickPoints))
+      // Re-render mask for restored clickPoints (current frame only)
+      void (async () => {
+        const v = mainVideoRef.current
+        const overlay = overlayCanvasRef.current
+        if (!v) return
+        try {
+          const baseCanvas = await captureVideoFrameToCanvas(v)
+          const targetFrame = getFrameIndexForTime(currentTimeRef.current ?? currentTime)
+          const framePoints = snapshot.clickPoints.filter(point => point.frameIndex === targetFrame)
+          await postPredictAndDraw(targetFrame, framePoints, baseCanvas, overlay, { timeoutMs: 20000 })
+        } catch (_e) {
+          // ignore
+        }
+      })()
+      return prevStack
     })
   }
 
   function redo() {
-    setRedoStack(stack => {
+    setHistoryRedoStack(stack => {
       if (stack.length === 0) return stack
-      setInteractions(current => {
-        const next = stack[stack.length - 1]
-        setUndoStack(u => [...u, cloneInteractions(current)])
-        return cloneInteractions(next)
-      })
-      return stack.slice(0, -1)
+      const prevStack = [...stack]
+      const snapshot = prevStack.pop()!
+      // capture current snapshot for undo
+      const currentSnapshot: Snapshot = { interactions: cloneInteractions(interactions), clickPoints: cloneClickPoints(clickPoints) }
+      setHistoryStack(h => [...h, cloneSnapshot(currentSnapshot)])
+      // restore snapshot
+      setInteractions(() => cloneInteractions(snapshot.interactions))
+      setClickPoints(() => cloneClickPoints(snapshot.clickPoints))
+      // Re-render mask for restored clickPoints (current frame only)
+      void (async () => {
+        const v = mainVideoRef.current
+        const overlay = overlayCanvasRef.current
+        if (!v) return
+        try {
+          const baseCanvas = await captureVideoFrameToCanvas(v)
+          const targetFrame = getFrameIndexForTime(currentTimeRef.current ?? currentTime)
+          const framePoints = snapshot.clickPoints.filter(point => point.frameIndex === targetFrame)
+          await postPredictAndDraw(targetFrame, framePoints, baseCanvas, overlay, { timeoutMs: 20000 })
+        } catch (_e) {
+          // ignore
+        }
+      })()
+      return prevStack
     })
   }
 
@@ -1734,13 +2268,13 @@ export default function App() {
         }
       }
 
-  const v = mainVideoRef.current
+      const v = mainVideoRef.current
       if (!v) return
 
       if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault()
         if (v.paused) {
-          v.play().catch(() => {})
+          v.play().catch(() => { })
         } else {
           v.pause()
         }
@@ -1796,7 +2330,7 @@ export default function App() {
             return { start, end: prevEnd }
           })
         }
-  } else if (e.key && e.key.toLowerCase() === 'd') {
+      } else if (e.key && e.key.toLowerCase() === 'd') {
         // Set selection end to current time. If no selection exists,
         // create a default-length selection ending at currentTime.
         e.preventDefault()
@@ -1844,7 +2378,7 @@ export default function App() {
             return { start: prevStart, end }
           })
         }
-  } else if (e.key && e.key.toLowerCase() === 's') {
+      } else if (e.key && e.key.toLowerCase() === 's') {
         // Open selection label console. If no selection exists, create a
         // default-length selection centered on currentTime, then open the
         // selection context menu positioned above the timeline selection.
@@ -1911,7 +2445,7 @@ export default function App() {
           const nextIdx = cur === -1 ? 0 : Math.min(actions.length - 1, cur + 1)
           if (actions[nextIdx] && actions[nextIdx] !== selectionMenuAction) setSelectionMenuAction(actions[nextIdx])
         }
-  } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter') {
         // Global Enter: always try to Add Action (unless focus is in a
         // text input/textarea/select — focus guard above prevents that).
         // If the selection context menu is open we let the local menu
@@ -1958,24 +2492,24 @@ export default function App() {
           const idx = interactions.findIndex(it => it.start_time <= t && t <= it.end_time)
           if (idx !== -1) removeInteraction(idx)
         }
-        } else if (e.key && e.key.toLowerCase() === 'q') {
-          // Q: cancel current selection and close selection menu
-          e.preventDefault()
-          // clear selection range
-          setDragRange({ start: null, end: null })
-          // close any open selection/context menu
-          if (selectionMenuHideTimerRef.current !== null) {
-            window.clearTimeout(selectionMenuHideTimerRef.current)
-            selectionMenuHideTimerRef.current = null
-          }
-          setSelectionDropdownOpen(false)
-          // clear hover tooltip/timers and hide tooltip
-          if (hoverTooltipTimerRef.current !== null) {
-            window.clearTimeout(hoverTooltipTimerRef.current)
-            hoverTooltipTimerRef.current = null
-          }
-          setHoverInfo(h => ({ ...h, visible: false }))
-          closeContextMenu()
+      } else if (e.key && e.key.toLowerCase() === 'q') {
+        // Q: cancel current selection and close selection menu
+        e.preventDefault()
+        // clear selection range
+        setDragRange({ start: null, end: null })
+        // close any open selection/context menu
+        if (selectionMenuHideTimerRef.current !== null) {
+          window.clearTimeout(selectionMenuHideTimerRef.current)
+          selectionMenuHideTimerRef.current = null
+        }
+        setSelectionDropdownOpen(false)
+        // clear hover tooltip/timers and hide tooltip
+        if (hoverTooltipTimerRef.current !== null) {
+          window.clearTimeout(hoverTooltipTimerRef.current)
+          hoverTooltipTimerRef.current = null
+        }
+        setHoverInfo(h => ({ ...h, visible: false }))
+        closeContextMenu()
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
         seekVideo((currentTime || 0) - 1)
@@ -1991,7 +2525,7 @@ export default function App() {
   }, [currentTime, duration, dragRange, actions, selectionMenuAction])
 
   async function exportJSON() {
-  setSaveStatus({ status: 'saving', message: 'Saving…' })
+    setSaveStatus({ status: 'saving', message: 'Saving…' })
     const payload = {
       scenario_id: scenarioId,
       video_id: videoId,
@@ -2004,7 +2538,7 @@ export default function App() {
     }
     try {
       await saveAnnotation(payload)
-  const savedName = `${stripExtension(selectedVideoFile)}.json`
+      const savedName = `${stripExtension(selectedVideoFile)}.json`
       setSaveStatus({ status: 'success', message: `Saved to annotations/${savedName}` })
     } catch (err) {
       console.error('Failed to save annotation', err)
@@ -2033,7 +2567,7 @@ export default function App() {
           type="button"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
         <div className="title">📽 Video Annotator</div>
@@ -2073,7 +2607,7 @@ export default function App() {
                                 setVideoOptions([])
                               }
                             })
-                            .catch(() => {})
+                            .catch(() => { })
                           setScenarioDropdownOpen(false)
                         }}
                       >
@@ -2147,10 +2681,10 @@ export default function App() {
             aria-label="Undo"
             data-tooltip="Undo (Ctrl/Cmd+Z)"
             onClick={undo}
-            disabled={undoStack.length === 0}
+            disabled={historyStack.length === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5H7l3-3M7 5l3 3M7 5h5a7 7 0 110 14h-2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M12 5H7l3-3M7 5l3 3M7 5h5a7 7 0 110 14h-2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
           <button
@@ -2158,10 +2692,10 @@ export default function App() {
             aria-label="Redo"
             data-tooltip="Redo (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
             onClick={redo}
-            disabled={redoStack.length === 0}
+            disabled={historyRedoStack.length === 0}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5h5l-3-3M17 5l-3 3M17 5h-5a7 7 0 100 14h2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M12 5h5l-3-3M17 5l-3 3M17 5h-5a7 7 0 100 14h2" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
         </div>
@@ -2280,10 +2814,12 @@ export default function App() {
                 <dt className="side-menu-meta-label">Filename</dt>
                 <dd className="side-menu-meta-value">{selectedVideoFile || '–'}</dd>
               </div>
-              {scenarioId && referenceVideoFile && (
+              {scenarioId && referenceVideoFiles.length > 0 && (
                 <div className="side-menu-meta-row">
                   <dt className="side-menu-meta-label">Reference</dt>
-                  <dd className="side-menu-meta-value">{referenceVideoFile}</dd>
+                  <dd className="side-menu-meta-value">
+                    {referenceVideoFiles.length === 1 ? referenceVideoFiles[0] : `${referenceVideoFiles.length} files`}
+                  </dd>
                 </div>
               )}
               <div className="side-menu-meta-row">
@@ -2324,100 +2860,140 @@ export default function App() {
               </div>
             </dl>
           </div>
-              {scenarioId && referenceVideoFile && (
-                <div style={{ marginTop: 8 }}>
-                  <label className="timeline-toggle side-toggle" style={{ margin: 0 }}>
-                    <span className="timeline-toggle-label">Show Reference</span>
+          {scenarioId && referenceVideoFiles.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <label className="timeline-toggle side-toggle" style={{ margin: 0 }}>
+                <span className="timeline-toggle-label">Show Reference</span>
+                <>
+                  <input
+                    className="toggle-checkbox"
+                    type="checkbox"
+                    checked={showReference}
+                    onChange={e => {
+                      const checked = e.target.checked
+                      setShowReference(checked)
+                      // Update visibility for all known reference files to match master toggle
+                      setReferenceVisibility(prev => {
+                        const next: Record<string, boolean> = { ...prev }
+                        referenceVideoFiles.forEach(f => {
+                          next[f] = checked
+                        })
+                        return next
+                      })
+                    }}
+                    aria-label="Show reference videos"
+                  />
+                  <span className="toggle-slider" aria-hidden="true" />
+                </>
+              </label>
+
+              {/* Per-reference toggles */}
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {referenceVideoFiles.map(file => (
+                  <label key={`ref-toggle-${file}`} className="timeline-toggle side-toggle" style={{ margin: 0 }}>
+                    <span className="timeline-toggle-label" title={file}>{String(file).split('/').pop()}</span>
                     <>
                       <input
                         className="toggle-checkbox"
                         type="checkbox"
-                        checked={showReference}
-                        onChange={e => setShowReference(e.target.checked)}
-                        aria-label="Show reference video"
+                        checked={Boolean(referenceVisibility[file])}
+                        onChange={e => setReferenceVisibility(prev => ({ ...prev, [file]: e.target.checked }))}
+                        aria-label={`Show reference ${file}`}
                       />
                       <span className="toggle-slider" aria-hidden="true" />
                     </>
                   </label>
-                </div>
-              )}
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </SideMenu>
-
-      {/* Picture-in-Picture overlay for reference video (syncs with main) */}
-      {scenarioId && referenceVideoFile && showReference && (
-        <div
-          role="button"
-          tabIndex={0}
-          style={{
-            position: 'fixed',
-            top: pipTop,
-            right: pipRight,
-            zIndex: 1300,
-            width: PIP_WIDTH,
-            height: PIP_HEIGHT,
-            borderRadius: 8,
-            overflow: 'hidden',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-            background: '#000',
-            touchAction: 'none'
-          }}
-        >
-          {/* Drag handle: only this area starts PiP drag. Keep it under control buttons so clicks on buttons still work. */}
-          <div
-            onPointerDown={startPipDrag}
-            aria-hidden="true"
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '100%', cursor: 'grab', zIndex: 1305 }}
-          />
-          {/* Swap button (top-right inside PiP) */}
-          <button
-            type="button"
-            className="icon-button with-tooltip"
-            aria-label="Swap with main"
-            data-tooltip="Swap with main video"
-            onClick={() => {
-              const mv = mainVideoRef.current
-              const rv = referenceVideoRef.current
-              if (!mv || !rv) {
-                setIsSwapped(s => !s)
-                return
-              }
-              const mainWasPlaying = !mv.paused && !mv.ended
-              const refWasPlaying = !rv.paused && !rv.ended
-              const mainTime = mv.currentTime
-              const refTime = rv.currentTime
-              // toggle swapped state
-              setIsSwapped(s => !s)
-              // After React updates and videos reload, restore times and play state
-              window.setTimeout(() => {
-                const newMain = mainVideoRef.current
-                const newRef = referenceVideoRef.current
-                if (!newMain || !newRef) return
-                try { newMain.currentTime = refTime } catch (_e) {}
-                try { newRef.currentTime = mainTime } catch (_e) {}
-                if (mainWasPlaying) newMain.play().catch(() => {})
-                else newMain.pause()
-                if (refWasPlaying) newRef.play().catch(() => {})
-                else newRef.pause()
-              }, 120)
-            }}
-            style={{ position: 'absolute', top: 8, right: 8, zIndex: 1310, width: 36, height: 36 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 16V8a2 2 0 00-2-2h-8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M3 8v8a2 2 0 002 2h8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M7 8l-4 4 4 4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M17 16l4-4-4-4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-          <video
-            key={`ref-overlay-${isSwapped ? selectedVideoFile : referenceVideoFile}`}
-            ref={referenceVideoRef}
-            src={pipSrc}
-            muted
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        </div>
+      {/* Picture-in-Picture overlays for reference videos (sync with main) */}
+      {scenarioId && referenceVideoFiles.length > 0 && showReference && (
+        <>
+          {referenceVideoFiles.map((file, idx) => {
+            if (!referenceVisibility[file]) return null
+            const topPos = pipTop + idx * (PIP_HEIGHT + 12)
+            const fileSrc = getSourceForFile(file)
+            const pipSrcFor = swapRefFile === file ? videoSource : fileSrc
+            return (
+              <div
+                key={`ref-overlay-${file}`}
+                role="button"
+                tabIndex={0}
+                style={{
+                  position: 'fixed',
+                  top: topPos,
+                  right: pipRight,
+                  zIndex: 1300 + idx,
+                  width: PIP_WIDTH,
+                  height: PIP_HEIGHT,
+                  borderRadius: 8,
+                  overflow: 'hidden',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+                  background: '#000',
+                  touchAction: 'none'
+                }}
+              >
+                <div
+                  onPointerDown={startPipDrag}
+                  aria-hidden="true"
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '100%', cursor: 'grab', zIndex: 1305 }}
+                />
+                <button
+                  type="button"
+                  className="icon-button with-tooltip"
+                  aria-label="Swap with main"
+                  data-tooltip="Swap with main video"
+                  onClick={() => {
+                    const mv = mainVideoRef.current
+                    const rv = referenceVideoRefs.current[file]
+                    if (!mv || !rv) {
+                      // toggle swap state when media elements not ready
+                      setSwapRefFile(prev => (prev === file ? null : file))
+                      return
+                    }
+                    const mainWasPlaying = !mv.paused && !mv.ended
+                    const refWasPlaying = !rv.paused && !rv.ended
+                    const mainTime = mv.currentTime
+                    const refTime = rv.currentTime
+                    // toggle swapped file
+                    setSwapRefFile(prev => (prev === file ? null : file))
+                    // After React updates and videos reload, restore times and play state
+                    window.setTimeout(() => {
+                      const newMain = mainVideoRef.current
+                      const newRef = referenceVideoRefs.current[file]
+                      if (!newMain || !newRef) return
+                      try { newMain.currentTime = refTime } catch (_e) { }
+                      try { newRef.currentTime = mainTime } catch (_e) { }
+                      if (mainWasPlaying) newMain.play().catch(() => { })
+                      else newMain.pause()
+                      if (refWasPlaying) newRef.play().catch(() => { })
+                      else newRef.pause()
+                    }, 120)
+                  }}
+                  style={{ position: 'absolute', top: 8, right: 8, zIndex: 1310, width: 36, height: 36 }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 16V8a2 2 0 00-2-2h-8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M3 8v8a2 2 0 002 2h8" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M7 8l-4 4 4 4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M17 16l4-4-4-4" fill="none" stroke="#0b1220" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                <video
+                  key={`ref-video-${file}`}
+                  ref={el => { referenceVideoRefs.current[file] = el }}
+                  crossOrigin="anonymous"
+                  src={pipSrcFor}
+                  muted
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+              </div>
+            )
+          })}
+        </>
       )}
 
       {activeScreen === 'configuration' && (
@@ -2474,7 +3050,7 @@ export default function App() {
       )}
 
       <div className="action-form">
-            <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label className="field-label">Object</label>
           <div style={{ position: 'relative' }}>
             {/* Custom dropdown: shows selected value, opens list on click. Uses outside-click handler to close. */}
@@ -2620,7 +3196,17 @@ export default function App() {
           </div>
 
           {/* Shortcuts block directly under left-col */}
-          <div className="shortcuts-below-left" style={{ padding: '10px 12px', borderTop: '1px solid rgba(148,163,184,0.04)', fontSize: 16, color: '#94a3b8' }}>
+          <div
+            className="shortcuts-below-left"
+            style={{
+              padding: '10px 12px',
+              borderTop: '1px solid rgba(148,163,184,0.04)',
+              fontSize: 16,
+              color: '#94a3b8',
+              cursor: 'default',
+              userSelect: 'none',
+            }}
+          >
             <div style={{ fontWeight: 600, color: '#cbd5e1', marginBottom: 20 }}>Keyboard Shortcuts</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '6px 8px', alignItems: 'center' }}>
               <div>Play / Pause</div>
@@ -2628,10 +3214,10 @@ export default function App() {
                 <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '3px 8px', fontSize: 14, fontWeight: 600 }}>Space</span>
               </div>
 
-                  <div>Seek backward</div>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontWeight: 800 }}>⬅</span>
-                  </div>
+              <div>Seek backward</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontWeight: 800 }}>⬅</span>
+              </div>
 
               <div>Seek forward</div>
               <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2667,7 +3253,7 @@ export default function App() {
               <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                 <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 14, fontWeight: 600 }}>Backspace</span>
               </div>
-              
+
               <div>Cancel selection</div>
               <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                 <span style={{ background: 'rgba(148,163,184,0.08)', color: '#e6eef8', borderRadius: 6, padding: '4px 8px', fontSize: 16, fontWeight: 600 }}>Q</span>
@@ -2679,7 +3265,10 @@ export default function App() {
           <VideoPanel
             videoKey={`main-${selectedVideoFile}`}
             videoRef={mainVideoRef}
+            overlayRef={overlayCanvasRef}
+            onVideoClick={handleVideoClick}
             src={mainSrc}
+            fps={effectiveFps}
             currentTime={currentTime}
             duration={duration}
             volume={volume}
@@ -2691,6 +3280,11 @@ export default function App() {
             onSeekBy={(d: number) => seekVideo(currentTime + d)}
             activeLabels={activeTimelineLabels.length > 0 ? activeTimelineLabels : undefined}
             activeColors={activeTimelineLabels.length > 0 ? activeTimelineLabels.map(l => getLabelColor(labelColors, l, '#94A3B8')) : undefined}
+            clickPoints={currentFramePoints.map(p => ({ id: p.id, normX: p.normX, normY: p.normY, objectId: p.objectId }))}
+            onDeletePoint={removeClickPoint}
+            getPointColor={trackletColorFor}
+            activeTrackletId={activeTrackletId}
+            onIncrementTracklet={cycleActiveTracklet}
           />
 
           <TimelineSection
@@ -2777,35 +3371,35 @@ export default function App() {
                 <button
                   type="button"
                   className="input custom-select-trigger"
-                      aria-haspopup="listbox"
-                      aria-expanded={selectionDropdownOpen}
-                      onMouseDown={e => e.stopPropagation()}
-                      onClick={e => {
-                        e.stopPropagation()
-                        setSelectionDropdownOpen(prev => !prev)
-                      }}
+                  aria-haspopup="listbox"
+                  aria-expanded={selectionDropdownOpen}
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => {
+                    e.stopPropagation()
+                    setSelectionDropdownOpen(prev => !prev)
+                  }}
                 >
                   <span className="custom-select-value">{selectionMenuAction || '—'}</span>
                   <span className="custom-select-caret">▾</span>
                 </button>
-                    {selectionDropdownOpen && (
-                      <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
-                        {actions.map(a => (
-                          <button
-                            key={a}
-                            type="button"
-                            className={`custom-select-option${a === selectionMenuAction ? ' is-selected' : ''}`}
-                            onMouseDown={e => e.stopPropagation()}
-                            onClick={() => {
-                              setSelectionMenuAction(a)
-                              setSelectionDropdownOpen(false)
-                            }}
-                          >
-                            {a}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                {selectionDropdownOpen && (
+                  <div className="custom-select-list" role="listbox" onMouseDown={e => e.stopPropagation()}>
+                    {actions.map(a => (
+                      <button
+                        key={a}
+                        type="button"
+                        className={`custom-select-option${a === selectionMenuAction ? ' is-selected' : ''}`}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => {
+                          setSelectionMenuAction(a)
+                          setSelectionDropdownOpen(false)
+                        }}
+                      >
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <label className="timeline-toggle selection-toggle">
@@ -2814,7 +3408,7 @@ export default function App() {
                 className="toggle-checkbox"
                 type="checkbox"
                 checked={contact}
-                onChange={(e)=> setContact(e.target.checked)}
+                onChange={(e) => setContact(e.target.checked)}
               />
               <span className="toggle-slider" aria-hidden="true"></span>
             </label>
@@ -2846,9 +3440,8 @@ export default function App() {
         </button>
         {saveStatus.status !== 'idle' && (
           <span
-            className={`fab-save-status save-status-${saveStatus.status} ${
-              saveStatus.status === 'success' || saveStatus.status === 'error' ? 'fade-auto-hide' : ''
-            }`}
+            className={`fab-save-status save-status-${saveStatus.status} ${saveStatus.status === 'success' || saveStatus.status === 'error' ? 'fade-auto-hide' : ''
+              }`}
           >
             {saveStatus.status === 'saving'
               ? 'Saving…'

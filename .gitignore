@@ -1,3 +1,4 @@
+backend/checkpoints/*.pt
 frontend/node_modules/
 frontend/dist/
 data/annotations

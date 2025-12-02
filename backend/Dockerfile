@@ -1,16 +1,47 @@
-FROM python:3.11-slim
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
-WORKDIR /app
+# --- Environment variables ---
+ARG MODEL_SIZE=base_plus
+ENV APP_ROOT=/app \
+    MODEL_SIZE=${MODEL_SIZE} \
+    PYTHONUNBUFFERED=1
 
-# --- Install system dependencies ---
-RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
+WORKDIR ${APP_ROOT}
+
+# --- System dependencies ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libavutil-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    pkg-config \
+    build-essential \
+    libffi-dev \
+    curl \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./ 
 
 # --- Install Python dependencies ---
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools \
+ && pip install --no-cache-dir -e ".[interactive-UI]"
 
-# --- Copy app source ---
-COPY . .
+# Fix ffmpeg path
+RUN [ -f /opt/conda/bin/ffmpeg ] && rm -f /opt/conda/bin/ffmpeg || true \
+ && ln -s /bin/ffmpeg /opt/conda/bin/ffmpeg
+
+# Copy backend server files
+COPY . ${APP_ROOT}
+
+# Copy SAM 2 checkpoints
+COPY checkpoints ./checkpoints
+RUN chmod +x /app/checkpoints/download_ckpts.sh
+
+# --- Add entrypoint script ---
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # --- Create user (optional, for non-root execution) ---
 ARG USERNAME=appuser
@@ -21,8 +52,8 @@ RUN groupadd --gid $USER_GID $USERNAME \
 	&& chown -R $USER_UID:$USER_GID /app
 USER $USERNAME
 
-# --- Expose port (Render auto-assigns $PORT) ---
+# --- Expose port ---
 EXPOSE 8000
 
 # --- Run server using Render's PORT env variable ---
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+ENTRYPOINT ["/entrypoint.sh"]

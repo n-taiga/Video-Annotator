@@ -16,6 +16,7 @@ export default function PreviewPanel({ title, videoKey, videoRef, src, timeLabel
         <video
           key={videoKey}
           ref={videoRef}
+          crossOrigin="anonymous"
           src={src}
           width="100%"
         />

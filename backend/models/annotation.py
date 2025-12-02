@@ -1,5 +1,4 @@
-from typing import List, Optional, Any, Dict
-
+from typing import Optional, Any
 from pydantic import BaseModel, Field, root_validator, validator
 
 
@@ -54,8 +53,8 @@ class Annotation(BaseModel):
 	task: Optional[str] = Field("", description="Canonical task name")
 	environment: Optional[str] = ""
 	object: Optional[str] = ""
-	actions: Optional[List[str]] = Field(default_factory=list)
-	interactions: Optional[List[Interaction]] = Field(default_factory=list)
+	actions: Optional[list[str]] = Field(default_factory=list)
+	interactions: Optional[list[Interaction]] = Field(default_factory=list)
 
 	# Accept unknown extras but ignore them
 	class Config:
@@ -63,7 +62,7 @@ class Annotation(BaseModel):
 		allow_population_by_field_name = True
 
 	@root_validator(pre=True)
-	def _map_legacy_keys(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+	def _map_legacy_keys(cls, values: dict[str, Any]) -> dict[str, Any]:
 		# Support old 'task_label' key by mapping it to 'task' when present
 		if "task_label" in values and "task" not in values:
 			values["task"] = values.get("task_label")

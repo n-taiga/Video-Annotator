@@ -1,9 +1,8 @@
-version: "3.9"
-
 services:
   backend:
     build:
       context: ./backend
+      dockerfile: Dockerfile
       args:
         USER_UID: ${UID:-1001}
         USER_GID: ${GID:-1001}
@@ -16,17 +15,25 @@ services:
       - ./data:/data
     environment:
       - PYTHONUNBUFFERED=1
-      - VIDEO_DIRECTORY=/data/videos
-      - ANNOTATION_DIRECTORY=/data/annotations
+      - APP_ROOT=/app
+      - DATA_ROOT=/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   frontend:
-    build: ./frontend
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
     container_name: frontend
     ports:
       - "5173:5173"
     volumes:
       - ./frontend:/app
-      # - /app/node_modules
     environment:
       - VITE_API_URL=/api
       - VITE_BACKEND_URL=http://backend:8000

@@ -1,8 +1,15 @@
 import React from 'react'
+import InteractiveLayer from './InteractiveLayer'
 
 interface VideoPanelProps {
   videoKey: string
   videoRef: React.RefObject<HTMLVideoElement>
+  /** Optional overlay canvas ref (used to draw masks) */
+  overlayRef?: React.RefObject<HTMLCanvasElement>
+  /** Called when user clicks the paused video overlay with computed coords */
+  onVideoClick?: (data: { time: number; localX: number; localY: number; normX: number; normY: number; videoX?: number; videoY?: number; frameIndex?: number; label: number }) => void
+  /** Optional frames-per-second for computing frame index */
+  fps?: number
   src: string
   currentTime: number
   duration: number
@@ -16,12 +23,23 @@ interface VideoPanelProps {
   // support multiple active labels overlapping the current time
   activeLabels?: string[]
   activeColors?: string[]
+  /** Click points to render as interactive buttons (normalized coords 0..1) */
+  clickPoints?: Array<{ id: string; normX: number; normY: number; objectId?: number }>
+  /** Called when the user requests deletion of a click point */
+  onDeletePoint?: (id: string) => void
+  /** Color lookup for click points */
+  getPointColor?: (objectId: number | null | undefined) => string
+  /** Current object id in use */
+  activeTrackletId?: number
+  /** Cycle to next object id */
+  onIncrementTracklet?: () => void
 }
 
-export default function VideoPanel({ videoKey, videoRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, onSeekBy, activeLabels, activeColors }: VideoPanelProps) {
+export default function VideoPanel({ videoKey, videoRef, overlayRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, onSeekBy, activeLabels, activeColors, clickPoints, onDeletePoint, onVideoClick, fps, getPointColor, activeTrackletId, onIncrementTracklet }: VideoPanelProps) {
   // Single toggle state for play/pause. We listen to the video's play/pause
   // events so the button reflects external changes (e.g. programmatic play).
   const [isPlaying, setIsPlaying] = React.useState(false)
+  const formatTime = React.useCallback((value: number) => (Number.isFinite(value) ? value.toFixed(2) : '–'), [])
 
   React.useEffect(() => {
     const v = videoRef.current
@@ -66,12 +84,95 @@ export default function VideoPanel({ videoKey, videoRef, src, currentTime, durat
               ))}
             </div>
           ) : null}
-          <video
-            key={videoKey}
-            ref={videoRef}
-            src={src}
-            width="100%"
-          />
+          <div style={{ position: 'relative' }}>
+            <video
+              key={videoKey}
+              ref={videoRef}
+              crossOrigin="anonymous"
+              src={src}
+              width="100%"
+              onClick={() => {
+                const v = videoRef.current
+                if (!v) return
+                try {
+                  // If the video is currently playing, pause it. Do NOT resume when paused.
+                  if (!v.paused) v.pause()
+                } catch (_e) {
+                  // ignore
+                }
+              }}
+            />
+            {/* overlay canvas for masks (pixel buffer size set by caller) */}
+            <canvas
+              ref={overlayRef}
+              className="overlay-canvas"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            />
+            {/* interactive layer is implemented in its own file for clarity; only show when paused */}
+            {!isPlaying ? <InteractiveLayer videoRef={videoRef} onVideoClick={onVideoClick} fps={fps} /> : null}
+            {/* Click-point buttons overlay (pointer events enabled) */}
+            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}>
+              {Array.isArray(clickPoints) && clickPoints.map(pt => (
+                <button
+                  key={pt.id}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    // Allow click even when interactive layer is present
+                    if (typeof onDeletePoint === 'function') onDeletePoint(pt.id)
+                  }}
+                  title="Remove point"
+                  style={{
+                    position: 'absolute',
+                    left: `${Math.max(0, Math.min(1, pt.normX)) * 100}%`,
+                    top: `${Math.max(0, Math.min(1, pt.normY)) * 100}%`,
+                    transform: 'translate(-50%, -50%)',
+                    pointerEvents: 'auto',
+                    border: 'none',
+                    width: 20,
+                    height: 20,
+                    borderRadius: 9999,
+                    background: getPointColor ? getPointColor(pt.objectId) : 'rgba(255,204,0,0.98)',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: 0,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                  </svg>
+                </button>
+              ))}
+              {typeof onIncrementTracklet === 'function' ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    onIncrementTracklet()
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: 12,
+                    bottom: 12,
+                    pointerEvents: 'auto',
+                    border: 'none',
+                    borderRadius: 9999,
+                    padding: '6px 12px',
+                    background: getPointColor ? getPointColor(activeTrackletId) : '#3B82F6',
+                    color: '#0B1220',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 6px rgba(15,23,42,0.35)'
+                  }}
+                >
+                  + ID {typeof activeTrackletId === 'number' ? activeTrackletId : ''}
+                </button>
+              ) : null}
+            </div>
+          </div>
           <div className="controls">
             {/* 1秒戻し */}
             <button
@@ -142,7 +243,7 @@ export default function VideoPanel({ videoKey, videoRef, src, currentTime, durat
                 <path d="M13 6v12l8-6-8-6zM3 6v12l8-6L3 6z" fill="#0b1220" />
               </svg>
             </button>
-            <div style={{marginLeft:12}}>Time: {currentTime.toFixed(2)} / {duration.toFixed(2)}</div>
+            <div style={{marginLeft:12}}>Time: {formatTime(currentTime)} / {formatTime(duration)}</div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
               {/* Speed selector on the left */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#94a3b8', fontSize: 12 }}>
