@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import * as d3 from 'd3'
-import { getLabelColor } from '../../../utils/colors'
-import type { LabelColorMap } from '../../../utils/colors'
+import { getLabelColor } from '../../../common/colors'
+import type { LabelColorMap } from '../../../common/colors'
 import type { DragRange } from '../../video'
 import type { ContextMenuState, Interaction, TimelineHoverInfo } from '../types'
 

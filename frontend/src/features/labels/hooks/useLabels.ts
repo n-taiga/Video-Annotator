@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { ActionLabelDictionary } from '../../../api'
 import { fetchActionLabels, updateActionLabels, fetchObjectLabels, updateObjectLabels } from '../../../api'
-import { mergeActions } from '../../../utils/actions'
-import type { LabelColorMap } from '../../../utils/colors'
-import { ensureLabelColors } from '../../../utils/colors'
-import { cloneLabelDictionary } from '../../../utils/labelConfig'
+import { mergeActions } from '../../../common/actions'
+import type { LabelColorMap } from '../../../common/colors'
+import { ensureLabelColors } from '../../../common/colors'
+import { cloneLabelDictionary } from '../../../common/labelConfig'
 
 export interface LabelInteractionLike {
   action_label: string

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Union
 import numpy as np
 
 class PointPayload(BaseModel):
@@ -52,7 +52,7 @@ class EncodedMask(BaseModel):
     width: int
     height: int
     format: str
-    data: str
+    data: Union[str, bytes]  # str for base64, bytes for binary
 
 
 class ObjectResult(BaseModel):

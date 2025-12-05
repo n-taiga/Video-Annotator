@@ -218,7 +218,16 @@ class Inference:
             )
         return session
 
-    def predict(self, payload: PredictPayload) -> FrameResult:
+    def predict(self, payload: PredictPayload, return_binary: bool = False) -> FrameResult:
+        """Run prediction for a single frame.
+        
+        Args:
+            payload: Prediction request payload
+            return_binary: If True, mask.data contains raw PNG bytes instead of base64 string
+        
+        Returns:
+            FrameResult with mask data (base64 or binary depending on return_binary)
+        """
         if not payload.videoPath:
             raise HTTPException(status_code=400, detail="videoPath is required")
         frame_index = payload.frameIndex
@@ -370,11 +379,14 @@ class Inference:
                 except Exception:
                     score = 0.0
 
+                # Get PNG bytes
+                png_bytes = mask_png_bytes(binary_mask)
+                
                 encoded_mask = EncodedMask(
                     width=video_W,
                     height=video_H,
                     format="png",
-                    data=_encode_mask_to_base64(binary_mask),
+                    data=png_bytes if return_binary else base64.b64encode(png_bytes).decode("ascii"),
                 )
 
                 results.append(

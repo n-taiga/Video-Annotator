@@ -1,11 +1,20 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { buildApiUrl } from '../../../api'
 import { createSessionId } from '../../video'
 import type { VideoClickData } from '../../video'
 import type { Interaction, TimelineSnapshot } from '../../timeline'
-import { getTrackletColor, MAX_TRACKLET_ID } from '../../../utils/mask'
+import {
+  getTrackletColor,
+  MAX_TRACKLET_ID,
+  decodeMaskFromBase64,
+  decodeMaskFromBytes,
+  drawColorizedMask,
+  drawMaskOutline,
+} from '../../../common/mask'
+import multipartStream from '../../../utils/multipartStream'
 import type { ClickPoint } from '../types'
+import { useMaskCache } from './useMaskCache'
 
 async function captureVideoFrameToCanvas(video: HTMLVideoElement): Promise<HTMLCanvasElement> {
   if (!video) throw new Error('No video element')
@@ -41,6 +50,9 @@ export interface UsePredictionStateInput {
   selectedVideoFile: string
 }
 
+/** Default mask opacity */
+const DEFAULT_MASK_OPACITY = 0.4
+
 export interface UsePredictionStateOutput {
   clickPoints: ClickPoint[]
   setClickPoints: Dispatch<SetStateAction<ClickPoint[]>>
@@ -58,6 +70,10 @@ export interface UsePredictionStateOutput {
     overlayCanvas: HTMLCanvasElement | null,
     opts?: { endpoint?: string; timeoutMs?: number }
   ) => Promise<DrawResult>
+  /** Draw masks from cache */
+  drawCachedMasks: (frameIndex: number, overlayCanvas: HTMLCanvasElement | null) => boolean
+  /** Clear mask cache */
+  clearMaskCache: () => void
 }
 
 export function usePredictionState({
@@ -71,6 +87,38 @@ export function usePredictionState({
   const [clickPoints, setClickPoints] = useState<ClickPoint[]>([])
   const [activeTrackletId, setActiveTrackletId] = useState<number>(0)
   const [sessionId, setSessionId] = useState('')
+  const prevFrameIndexRef = useRef<number | null>(null)
+  
+  // Mask cache
+  const {
+    cacheMask,
+    getCachedMasksForFrame,
+    hasFrameCache,
+    clearCache: clearMaskCache,
+  } = useMaskCache()
+
+  /**
+   * Draw cached masks to overlay canvas
+   */
+  const drawCachedMasks = useCallback((frameIndex: number, overlayCanvas: HTMLCanvasElement | null): boolean => {
+    if (!overlayCanvas) return false
+    
+    const cachedMasks = getCachedMasksForFrame(frameIndex)
+    if (cachedMasks.length === 0) return false
+    
+    const ctx = overlayCanvas.getContext('2d')
+    if (!ctx) return false
+    
+    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
+    
+    // Draw mask for each object
+    for (const entry of cachedMasks) {
+      drawColorizedMask(ctx, entry.maskBitmap, entry.objectId, DEFAULT_MASK_OPACITY)
+      drawMaskOutline(ctx, entry.maskBitmap, entry.objectId)
+    }
+    
+    return true
+  }, [getCachedMasksForFrame])
 
   const postPredictAndDraw = useCallback(async (
     frameIndex: number,
@@ -174,7 +222,10 @@ export function usePredictionState({
 
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'multipart/mixed',
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       })
@@ -188,105 +239,83 @@ export function usePredictionState({
       if (!ctx) return { success: false, error: 'no 2d context' }
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
 
-      const maskCanvas = document.createElement('canvas')
-      maskCanvas.width = overlayCanvas.width
-      maskCanvas.height = overlayCanvas.height
-      const mctx = maskCanvas.getContext('2d')
-      if (!mctx) return { success: false, error: 'no mask 2d context' }
-      mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height)
-
-      const contentType = (res.headers.get('content-type') || '').toLowerCase()
-      if (contentType.includes('application/json')) {
-        const json = await res.json()
-        try {
-          if (typeof console.groupCollapsed === 'function') {
-            console.groupCollapsed(`Predict JSON response | session=${json?.sessionId} frame=${json?.frameIndex}`)
-            console.log(json)
-            console.groupEnd()
-          } else {
-            console.log('Predict JSON response', json)
+      const contentType = res.headers.get('content-type') || ''
+      
+      if (contentType.includes('multipart/mixed')) {
+        // Multipart response: binary PNG transfer
+        const body = res.body
+        if (!body) throw new Error('No response body for multipart')
+        
+        const stream = multipartStream(contentType, body)
+        const reader = stream.getReader()
+        
+        let metadata: { sessionId?: string; frameIndex?: number; objectCount?: number } | null = null
+        let currentObjectMeta: { objectId?: number; score?: number; width?: number; height?: number } | null = null
+        
+        while (true) {
+          const { done, value: part } = await reader.read()
+          if (done) break
+          
+          const partContentType = part.headers.get('content-type') || ''
+          
+          if (partContentType.includes('application/json')) {
+            const json = JSON.parse(new TextDecoder().decode(part.body))
+            if ('sessionId' in json) {
+              metadata = json
+            } else if ('objectId' in json) {
+              currentObjectMeta = json
+            }
+          } else if (partContentType.includes('image/png') && currentObjectMeta) {
+            const objectId = typeof currentObjectMeta.objectId === 'number' ? currentObjectMeta.objectId : 0
+            const responseFrameIndex = metadata?.frameIndex ?? frameIndex
+            
+            try {
+              const maskBitmap = await decodeMaskFromBytes(part.body)
+              cacheMask(responseFrameIndex, objectId, maskBitmap)
+              drawColorizedMask(ctx, maskBitmap, objectId, DEFAULT_MASK_OPACITY)
+              drawMaskOutline(ctx, maskBitmap, objectId)
+            } catch (err) {
+              console.warn('Failed to decode mask from multipart PNG', err)
+            }
+            
+            currentObjectMeta = null
           }
-        } catch (_err) {
-          // ignore logging errors
         }
+      } else if (contentType.includes('application/json')) {
+        // JSON response (fallback)
+        const json = await res.json()
         const results = Array.isArray(json?.results) ? json.results : []
+        const responseFrameIndex = typeof json?.frameIndex === 'number' ? json.frameIndex : frameIndex
+        
         for (const r of results) {
           const b64 = r?.mask?.data
+          const objectId = typeof r?.objectId === 'number' ? r.objectId : 0
           if (!b64) continue
           try {
-            const binary = atob(b64)
-            const len = binary.length
-            const bytes = new Uint8Array(len)
-            for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i)
-            const maskBlob = new Blob([bytes], { type: 'image/png' })
-            const imgBitmap = await createImageBitmap(maskBlob)
-            mctx.drawImage(imgBitmap, 0, 0, maskCanvas.width, maskCanvas.height)
+            // Decode using new utility
+            const maskBitmap = await decodeMaskFromBase64(b64)
+            
+            // Save to cache
+            cacheMask(responseFrameIndex, objectId, maskBitmap)
+            
+            // Draw mask with object-specific color
+            drawColorizedMask(ctx, maskBitmap, objectId, DEFAULT_MASK_OPACITY)
+            
+            // Draw outline
+            drawMaskOutline(ctx, maskBitmap, objectId)
           } catch (err) {
             console.warn('Failed to decode mask from JSON result', err)
             continue
           }
         }
       } else {
+        // Non-JSON response (kept for compatibility)
         const blob = await res.blob()
         const imgBitmap = await createImageBitmap(blob)
-        mctx.drawImage(imgBitmap, 0, 0, maskCanvas.width, maskCanvas.height)
-      }
-
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.drawImage(maskCanvas, 0, 0)
-      ctx.globalCompositeOperation = 'source-in'
-      ctx.fillStyle = 'rgba(0, 89, 255, 0.32)'
-      ctx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height)
-      ctx.globalCompositeOperation = 'source-over'
-
-      try {
-        const w = maskCanvas.width
-        const h = maskCanvas.height
-        const src = mctx.getImageData(0, 0, w, h)
-        const srcData = src.data
-        const out = mctx.createImageData(w, h)
-        const outData = out.data
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4
-            const a = srcData[i + 3]
-            if (a > 128) {
-              let isEdge = false
-              if (x > 0 && srcData[i - 4 + 3] <= 128) isEdge = true
-              else if (x < w - 1 && srcData[i + 4 + 3] <= 128) isEdge = true
-              else if (y > 0 && srcData[i - w * 4 + 3] <= 128) isEdge = true
-              else if (y < h - 1 && srcData[i + w * 4 + 3] <= 128) isEdge = true
-              if (isEdge) {
-                outData[i + 0] = 255
-                outData[i + 1] = 255
-                outData[i + 2] = 255
-                outData[i + 3] = 255
-              }
-            }
-          }
-        }
-        const outlineCanvas = document.createElement('canvas')
-        outlineCanvas.width = w
-        outlineCanvas.height = h
-        const octx = outlineCanvas.getContext('2d')
-        if (octx) {
-          octx.putImageData(out, 0, 0)
-          ctx.save()
-          ctx.globalCompositeOperation = 'source-over'
-          ctx.drawImage(outlineCanvas, 0, 0)
-          ctx.globalCompositeOperation = 'source-in'
-          ctx.fillStyle = 'rgba(255,255,255,0.95)'
-          ctx.fillRect(0, 0, w, h)
-          ctx.restore()
-          ctx.save()
-          ctx.filter = 'blur(0.5px)'
-          ctx.globalCompositeOperation = 'source-over'
-          ctx.drawImage(outlineCanvas, 0, 0)
-          ctx.filter = 'none'
-          ctx.restore()
-        }
-      } catch (err) {
-        console.warn('Outline generation failed', err)
+        // Cache and draw as object ID 0
+        cacheMask(frameIndex, 0, imgBitmap)
+        drawColorizedMask(ctx, imgBitmap, 0, DEFAULT_MASK_OPACITY)
+        drawMaskOutline(ctx, imgBitmap, 0)
       }
 
       return { success: true }
@@ -327,6 +356,29 @@ export function usePredictionState({
     return clickPoints.filter(point => point.frameIndex === frameIndex)
   }, [clickPoints, currentTime, getFrameIndexForTime])
 
+  // Redraw masks from cache when frame changes
+  useEffect(() => {
+    const frameIndex = getFrameIndexForTime(currentTime)
+    
+    // Skip if same frame
+    if (prevFrameIndexRef.current === frameIndex) return
+    prevFrameIndexRef.current = frameIndex
+    
+    const overlay = overlayCanvasRef.current
+    if (!overlay) return
+    
+    // Redraw if masks exist in cache
+    if (hasFrameCache(frameIndex)) {
+      drawCachedMasks(frameIndex, overlay)
+    } else {
+      // Clear if no cache
+      const ctx = overlay.getContext('2d')
+      if (ctx) {
+        ctx.clearRect(0, 0, overlay.width, overlay.height)
+      }
+    }
+  }, [currentTime, getFrameIndexForTime, hasFrameCache, drawCachedMasks])
+
   return {
     clickPoints,
     setClickPoints,
@@ -338,6 +390,8 @@ export function usePredictionState({
     handleSnapshotRestore,
     captureVideoFrameToCanvas,
     postPredictAndDraw,
+    drawCachedMasks,
+    clearMaskCache,
   }
 }
 

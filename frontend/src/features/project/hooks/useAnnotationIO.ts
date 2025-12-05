@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { loadAnnotation, saveAnnotation } from '../../../api'
-import { mergeActions } from '../../../utils/actions'
+import { mergeActions } from '../../../common/actions'
 import type { SaveStatus } from '../types'
 
 interface AnnotationInteraction {

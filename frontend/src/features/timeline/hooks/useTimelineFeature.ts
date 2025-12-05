@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import type * as d3 from 'd3'
-import type { LabelColorMap } from '../../../utils/colors'
+import type { LabelColorMap } from '../../../common/colors'
 import type { TimelineSnapshot, Interaction } from '../types'
 import type { UseTimelineModelOutput } from './useTimelineModel'
 import { useTimelineAnnotations } from './useTimelineAnnotations'

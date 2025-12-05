@@ -1,7 +1,8 @@
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Header
 from services.inference_sam import Inference
 from models.inference_sam import PredictPayload, FrameResult
+from utils.multipart import build_multipart_response
 
 router = APIRouter(tags=["inference"])
 
@@ -20,10 +21,33 @@ def start_session(body: Optional[dict] = Body(None)):
         raise HTTPException(status_code=500, detail=str(exc))
 
 @router.post("/predict", response_model=FrameResult)
-def predict(payload: PredictPayload):
-    """Run prediction for a single frame using an existing sessionId."""
+def predict(payload: PredictPayload, accept: Optional[str] = Header(None)):
+    """Run prediction for a single frame using an existing sessionId.
+    
+    If Accept header is 'multipart/mixed', returns a multipart response with:
+    - Part 1: JSON metadata (sessionId, frameIndex, objectCount)
+    - For each object:
+      - Part N: JSON object metadata (objectId, score, width, height)
+      - Part N+1: PNG mask binary data
+    
+    Otherwise returns standard JSON FrameResult with base64-encoded masks.
+    """
     try:
-        result = inference.predict(payload)
+        # Check if client accepts multipart response
+        use_multipart = accept and "multipart/mixed" in accept
+        result = inference.predict(payload, return_binary=use_multipart)
+        
+        if use_multipart:
+            masks = [
+                (r.objectId, r.score, r.mask.width, r.mask.height, r.mask.data)
+                for r in result.results
+            ]
+            return build_multipart_response(
+                session_id=result.sessionId,
+                frame_index=result.frameIndex,
+                masks=masks
+            )
+        
         return result
     except ValueError as exc:
         import traceback
@@ -36,12 +60,12 @@ def predict(payload: PredictPayload):
     except RuntimeError as exc:
         import traceback
         traceback.print_exc()
-        # 404だとルーティングエラーと区別がつかないため、一時的に500にするか、ログを出す
         raise HTTPException(status_code=404, detail=f"Session error: {exc}")
     except Exception as exc:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.post("/close_session")
 def close_session(body: Optional[dict] = Body(None)):

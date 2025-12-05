@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react'
-import { getLabelColor, LabelColorMap } from '../../../utils/colors'
+import { getLabelColor, LabelColorMap } from '../../../common/colors'
 
 interface LabelTimelineProps {
   duration: number

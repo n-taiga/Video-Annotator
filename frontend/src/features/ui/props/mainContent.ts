@@ -7,8 +7,8 @@ import type { UseTimelineFeatureResult } from '../../timeline/hooks/useTimelineF
 import type { UseLabelsFeatureResult } from '../../labels/hooks/useLabelsFeature'
 import type { SaveStatus } from '../../project/types'
 import type { VideoClickData } from '../../video'
-import type { LabelColorMap } from '../../../utils/colors'
-import { getLabelColor } from '../../../utils/colors'
+import type { LabelColorMap } from '../../../common/colors'
+import { getLabelColor } from '../../../common/colors'
 import type { Interaction } from '../../timeline'
 
 const FALLBACK_LABEL_COLOR = '#94A3B8'

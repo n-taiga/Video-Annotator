@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react'
 import type React from 'react'
 import type { ActionLabelDictionary } from '../../../api'
-import type { LabelColorMap } from '../../../utils/colors'
+import type { LabelColorMap } from '../../../common/colors'
 import { useLabels } from './useLabels'
 import type { LabelRenameActionContext, LabelRemoveActionContext } from './useLabels'
 
