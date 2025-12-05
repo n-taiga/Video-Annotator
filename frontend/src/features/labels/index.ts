@@ -1,0 +1,5 @@
+export { default as ConfigurationPanel } from './components/ConfigurationPanel'
+export { default as LabelTimeline } from './components/LabelTimeline'
+export { useLabels } from './hooks/useLabels'
+export { useLabelsFeature } from './hooks/useLabelsFeature'
+export type { LabelRenameActionContext, LabelRemoveActionContext } from './hooks/useLabels'

@@ -26,13 +26,17 @@ export default function ActionTable({ interactions, onRemove }: ActionTableProps
           </tr>
         </thead>
         <tbody>
-          {interactions.map((it, idx)=> (
+          {interactions.map((it, idx) => (
             <tr key={idx} className="action-table-row">
               <td>{it.action_label}</td>
               <td>{it.start_time.toFixed(3)}</td>
               <td>{it.end_time.toFixed(3)}</td>
-              <td>{it.contact? 'true':'false'}</td>
-              <td><button className="button" onClick={()=>onRemove(idx)}>Delete</button></td>
+              <td>{it.contact ? 'true' : 'false'}</td>
+              <td>
+                <button className="button" onClick={() => onRemove(idx)}>
+                  Delete
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>

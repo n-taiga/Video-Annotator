@@ -29,20 +29,8 @@ export default function TimelineSection({
   onContactChange,
   onAddInteraction,
   onExport,
-  saveStatus
+  saveStatus,
 }: TimelineSectionProps) {
-  const handleExport = () => {
-    void onExport()
-  }
-
-  const isSaving = saveStatus.status === 'saving'
-  const shouldShowStatus = saveStatus.status !== 'idle'
-  const statusMessage =
-    saveStatus.status === 'saving'
-      ? 'Saving…'
-      : saveStatus.message ??
-        (saveStatus.status === 'success' ? 'Saved successfully.' : 'Failed to save annotation.')
-
   return (
     <div className="timeline" ref={timelineRef}>
       <div className="timeline-svg-wrapper">
@@ -66,11 +54,17 @@ export default function TimelineSection({
         <div className="timeline-form">
           <label className="timeline-field">
             <span className="timeline-field-label">Label</span>
-            <select value={selectedAction} onChange={(e)=> onSelectedActionChange(e.target.value)}>
-              {actions.map(a=> <option key={a} value={a}>{a}</option>)}
+            <select value={selectedAction} onChange={e => onSelectedActionChange(e.target.value)}>
+              {actions.map(a => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
             </select>
             <div className="timeline-add-under-label">
-              <button className="button" onClick={onAddInteraction}>Add Action</button>
+              <button className="button" onClick={onAddInteraction}>
+                Add Action
+              </button>
             </div>
           </label>
           <label className="timeline-toggle">
@@ -79,7 +73,7 @@ export default function TimelineSection({
               className="toggle-checkbox"
               type="checkbox"
               checked={contact}
-              onChange={(e)=> onContactChange(e.target.checked)}
+              onChange={e => onContactChange(e.target.checked)}
             />
             <span className="toggle-slider" aria-hidden="true"></span>
           </label>

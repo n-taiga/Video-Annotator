@@ -26,7 +26,7 @@ export default function WaveformTimeline({
   waveColor = '#2563eb',
   backgroundColor = '#0f172a',
   className,
-  onSeek
+  onSeek,
 }: WaveformTimelineProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)

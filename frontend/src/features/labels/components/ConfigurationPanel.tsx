@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom'
 import type { ColorResult } from 'react-color'
 import { ChromePicker } from 'react-color'
-import type { LabelColorMap } from '../utils/colors'
+import type { LabelColorMap } from '../../../utils/colors'
 
 interface ConfigurationPanelProps {
   actions: string[]
