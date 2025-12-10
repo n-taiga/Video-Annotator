@@ -10,6 +10,7 @@ import { useTimelineFeature, useTimelineModel } from '../features/timeline'
 import type { Interaction } from '../features/timeline'
 import { usePredictionState, usePredictionActions } from '../features/prediction'
 import type { ClickPoint } from '../features/prediction'
+import type { VideoClickData } from '../features/video'
 
 export interface UseAppControllerResult {
   appLayoutProps: AppLayoutProps
@@ -197,6 +198,14 @@ export function useAppController(): UseAppControllerResult {
     selectionMenuAction: timeline.contextMenu.selectionMenuAction,
   })
 
+  const { repositionToTime } = timeline.selection
+
+  const handleVideoClickWithSelection = useCallback((info: VideoClickData) => {
+    const clickTime = Number.isFinite(info.time) ? info.time : video.player.currentTime
+    repositionToTime(clickTime)
+    return handleVideoClick(info)
+  }, [handleVideoClick, repositionToTime, video.player.currentTime])
+
   const appLayoutProps = buildAppLayoutProps({
     ui,
     project,
@@ -209,7 +218,7 @@ export function useAppController(): UseAppControllerResult {
     activeTimelineLabels,
     saveStatus,
     onExportAnnotations: exportJSON,
-    onVideoClick: handleVideoClick,
+    onVideoClick: handleVideoClickWithSelection,
     onDeletePoint: removeClickPoint,
     getPointColor: trackletColorFor,
     activeTrackletId,

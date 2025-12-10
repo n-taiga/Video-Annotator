@@ -336,6 +336,13 @@ export function usePredictionState({
       const baseCanvas = await captureVideoFrameToCanvas(videoEl)
       const targetFrame = getFrameIndexForTime(currentTimeRef.current ?? currentTime)
       const framePoints = snapshot.clickPoints.filter(point => point.frameIndex === targetFrame)
+      if (framePoints.length === 0) {
+        if (overlay) {
+          const ctx = overlay.getContext('2d')
+          if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height)
+        }
+        return
+      }
       await postPredictAndDraw(targetFrame, framePoints, baseCanvas, overlay, { timeoutMs: 20000 })
     } catch (_err) {
       // ignore prediction redraw errors during history restore

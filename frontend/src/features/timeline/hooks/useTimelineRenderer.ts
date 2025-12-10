@@ -1,10 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import * as d3 from 'd3'
 import { getLabelColor } from '../../../common/colors'
 import type { LabelColorMap } from '../../../common/colors'
 import type { DragRange } from '../../video'
-import type { ContextMenuState, Interaction, TimelineHoverInfo } from '../types'
+import type { ContextMenuState, Interaction, SelectionEndpoint, TimelineHoverInfo } from '../types'
 
 export interface UseTimelineRendererInput {
   interactions: Interaction[]
@@ -13,11 +13,13 @@ export interface UseTimelineRendererInput {
   dragRange: DragRange
   setDragRange: Dispatch<SetStateAction<DragRange>>
   openContextMenu: (next: ContextMenuState) => void
+  clearSelectionMenuHideTimer: () => void
   setHoverInfo: Dispatch<SetStateAction<TimelineHoverInfo>>
   hoverTooltipTimerRef: MutableRefObject<number | null>
   currentTime: number
   currentTimeRef: MutableRefObject<number>
   seekVideo: (time: number) => void
+  fps: number
   timelineRef: RefObject<HTMLDivElement>
   svgRef: RefObject<SVGSVGElement>
   xScaleRef: MutableRefObject<d3.ScaleLinear<number, number> | null>
@@ -25,6 +27,11 @@ export interface UseTimelineRendererInput {
   brushGroupRef: MutableRefObject<d3.Selection<SVGGElement, unknown, null, undefined> | null>
   timeLineSelectionRef: MutableRefObject<d3.Selection<SVGLineElement, unknown, null, undefined> | null>
   scrubActiveRef: MutableRefObject<boolean>
+  selectionMenuRef: RefObject<HTMLDivElement>
+  selectionMenuHideTimerRef: MutableRefObject<number | null>
+  selectionMenuHideDelay: number
+  closeContextMenu: () => void
+  onSelectionEndpointClick?: (params: { side: SelectionEndpoint; time: number }) => number | undefined
 }
 
 export function useTimelineRenderer({
@@ -34,6 +41,7 @@ export function useTimelineRenderer({
   dragRange,
   setDragRange,
   openContextMenu,
+  clearSelectionMenuHideTimer,
   setHoverInfo,
   hoverTooltipTimerRef,
   currentTime,
@@ -46,7 +54,27 @@ export function useTimelineRenderer({
   brushGroupRef,
   timeLineSelectionRef,
   scrubActiveRef,
+  fps,
+  selectionMenuRef,
+  selectionMenuHideTimerRef,
+  selectionMenuHideDelay,
+  closeContextMenu,
+  onSelectionEndpointClick,
 }: UseTimelineRendererInput) {
+  const dragRangeRef = useRef<DragRange>(dragRange)
+  const snapToFrame = (time: number) => {
+    if (!Number.isFinite(fps) || fps <= 0) return Number(time.toFixed(3))
+    const frameNumber = Math.round(time * fps)
+    const snapped = frameNumber / fps
+    return Number.isFinite(snapped) ? Number(snapped.toFixed(3)) : Number(time.toFixed(3))
+  }
+  const handlePointerStateRef = useRef({
+    pointerId: null as number | null,
+    handle: null as 'left' | 'right' | null,
+    startX: 0,
+    startY: 0,
+    dragged: false,
+  })
   useEffect(() => {
     if (!timelineRef.current || !svgRef.current) return
     const totalWidth = Math.max(1, timelineRef.current.clientWidth)
@@ -57,6 +85,7 @@ export function useTimelineRenderer({
     const ACTION_BAR_Y = 18
     const ACTION_BAR_RADIUS = 8
     const svg = d3.select(svgRef.current)
+    const svgNode = svg.node()
     svg.attr('width', totalWidth).attr('height', height)
     svg.selectAll('*').remove()
 
@@ -133,7 +162,7 @@ export function useTimelineRenderer({
     const brush = d3
       .brushX()
       .extent([[margin.left, 70], [margin.left + innerWidth, 94]])
-      .handleSize(12)
+      .handleSize(7)
       .on('brush end', event => {
         if (!event.selection) {
           setDragRange(prev => {
@@ -152,6 +181,14 @@ export function useTimelineRenderer({
           if (prev.start === start && prev.end === end) return prev
           return { start, end }
         })
+        const pointerEvent = event.sourceEvent as PointerEvent | undefined
+        if (pointerEvent && svgNode) {
+          const [px] = d3.pointer(pointerEvent, svgNode)
+          const pointerTime = x.invert(px)
+          if (Number.isFinite(pointerTime)) {
+            seekVideo(snapToFrame(pointerTime))
+          }
+        }
       })
 
     brushRef.current = brush
@@ -177,6 +214,19 @@ export function useTimelineRenderer({
       .attr('stroke', '#0f172a')
       .attr('rx', 3)
       .attr('ry', 3)
+      .on('pointerdown.handle-click', event => {
+        const target = event.currentTarget as Element
+        const classList = target.getAttribute('class') ?? ''
+        const isLeftHandle = classList.includes('handle--w')
+        const isRightHandle = classList.includes('handle--e')
+        handlePointerStateRef.current = {
+          pointerId: event.pointerId,
+          handle: isLeftHandle ? 'left' : isRightHandle ? 'right' : null,
+          startX: event.clientX,
+          startY: event.clientY,
+          dragged: false,
+        }
+      })
     brushGroupRef.current = brushGroup
 
     const hintY = (80 + 94) / 2
@@ -219,14 +269,13 @@ export function useTimelineRenderer({
       timeLine.attr('x1', initX).attr('x2', initX)
     }
 
-    const svgNode = svg.node()
     if (svgNode) {
       const seekFromPointer = (event: PointerEvent) => {
         if (!xScaleRef.current) return
         const [px] = d3.pointer(event, svgNode)
         const time = xScaleRef.current.invert(px)
         if (Number.isNaN(time)) return
-        seekVideo(time)
+        seekVideo(snapToFrame(time))
       }
 
       svg.on('pointerdown.scrub', event => {
@@ -269,7 +318,6 @@ export function useTimelineRenderer({
     brushGroupRef,
     brushRef,
     currentTimeRef,
-    duration,
     hoverTooltipTimerRef,
     interactions,
     labelColors,
@@ -282,7 +330,12 @@ export function useTimelineRenderer({
     timelineRef,
     timeLineSelectionRef,
     xScaleRef,
+    fps,
   ])
+
+  useEffect(() => {
+    dragRangeRef.current = dragRange
+  }, [dragRange])
 
   useEffect(() => {
     if (!brushRef.current || !brushGroupRef.current || !xScaleRef.current) return
@@ -303,4 +356,97 @@ export function useTimelineRenderer({
     const cx = x(clamped)
     timeLineSelectionRef.current.attr('x1', cx).attr('x2', cx)
   }, [currentTime, timeLineSelectionRef, xScaleRef])
+
+  useEffect(() => {
+    if (!brushGroupRef.current) return
+    if (dragRange.start === null || dragRange.end === null) return
+    const selectionNode = brushGroupRef.current.select<SVGRectElement>('.selection')
+    if (selectionNode.empty()) return
+    const node = selectionNode.node()
+    if (!node) return
+
+    const handlePointerEnter = () => {
+      if (dragRange.start === null || dragRange.end === null) return
+      clearSelectionMenuHideTimer()
+      const rect = node.getBoundingClientRect()
+      const x = rect.left + rect.width / 2
+      const y = Math.max(rect.top - 12, 12)
+      openContextMenu({ open: true, type: 'selection', x, y })
+    }
+
+    const handlePointerLeave = (event: PointerEvent) => {
+      if (selectionMenuRef.current && event.relatedTarget) {
+        try {
+          const targetNode = event.relatedTarget as Node
+          if (selectionMenuRef.current.contains(targetNode)) {
+            return
+          }
+        } catch (_err) {
+          // ignore contains errors
+        }
+      }
+      clearSelectionMenuHideTimer()
+      if (selectionMenuHideDelay <= 0) {
+        closeContextMenu()
+        return
+      }
+      selectionMenuHideTimerRef.current = window.setTimeout(() => {
+        closeContextMenu()
+        selectionMenuHideTimerRef.current = null
+      }, selectionMenuHideDelay)
+    }
+
+    selectionNode.on('pointerenter.selection-hover', () => {
+      handlePointerEnter()
+    })
+    selectionNode.on('pointerleave.selection-hover', (event: PointerEvent) => {
+      handlePointerLeave(event)
+    })
+
+    return () => {
+      selectionNode.on('pointerenter.selection-hover', null)
+      selectionNode.on('pointerleave.selection-hover', null)
+    }
+  }, [brushGroupRef, clearSelectionMenuHideTimer, dragRange, openContextMenu, closeContextMenu, selectionMenuRef, selectionMenuHideTimerRef, selectionMenuHideDelay])
+
+  useEffect(() => {
+    const movementThreshold = 4
+
+    const onPointerMove = (event: PointerEvent) => {
+      const pointerState = handlePointerStateRef.current
+      if (pointerState.pointerId !== event.pointerId) return
+      if (pointerState.dragged) return
+      const dx = event.clientX - pointerState.startX
+      const dy = event.clientY - pointerState.startY
+      if (Math.hypot(dx, dy) > movementThreshold) {
+        pointerState.dragged = true
+      }
+    }
+
+    const onPointerUp = (event: PointerEvent) => {
+      const pointerState = handlePointerStateRef.current
+      if (pointerState.pointerId !== event.pointerId) return
+      const handle = pointerState.handle
+      const dragged = pointerState.dragged
+      pointerState.pointerId = null
+      pointerState.handle = null
+      pointerState.dragged = false
+      if (dragged || !handle) return
+      const { start, end } = dragRangeRef.current
+      const timeToSeek = handle === 'left' ? start : end
+        if ((timeToSeek ?? null) !== null && Number.isFinite(timeToSeek as number)) {
+          const targetTime = snapToFrame(timeToSeek as number)
+          const override = onSelectionEndpointClick?.({ side: handle === 'left' ? 'start' : 'end', time: targetTime })
+          const finalTime = typeof override === 'number' && Number.isFinite(override) ? override : targetTime
+          seekVideo(finalTime)
+        }
+    }
+
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+    }
+  }, [seekVideo, fps, onSelectionEndpointClick])
 }

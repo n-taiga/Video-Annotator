@@ -32,3 +32,13 @@ export interface TimelineSnapshot<TClickPoint extends Record<string, unknown>> {
 	interactions: Interaction[]
 	clickPoints: TClickPoint[]
 }
+
+export type SelectionEndpoint = 'start' | 'end'
+
+export interface SelectionEndpointClickEvent<TClickPoint extends Record<string, unknown>> {
+	side: SelectionEndpoint
+	time: number
+	frameIndex: number
+	clickPoints: TClickPoint[]
+	hasClickPoints: boolean
+}

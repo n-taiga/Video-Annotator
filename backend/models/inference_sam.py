@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Iterable, Union
+from enum import Enum
 import numpy as np
 
 class PointPayload(BaseModel):
@@ -53,6 +54,27 @@ class EncodedMask(BaseModel):
     height: int
     format: str
     data: Union[str, bytes]  # str for base64, bytes for binary
+
+
+class PropagateMode(str, Enum):
+    bidirectional = "bidirectional"
+    forward = "forward"
+    reverse = "reverse"
+
+
+class PropagateClick(BaseModel):
+    frameIndex: int
+    objectId: int
+    points: list[PointPayload] = Field(default_factory=list)
+
+
+class PropagatePayload(BaseModel):
+    sessionId: Optional[str] = None
+    videoPath: str
+    source: PropagateClick
+    target: PropagateClick
+    maxSeconds: float = 10.0
+    mode: PropagateMode = PropagateMode.bidirectional
 
 
 class ObjectResult(BaseModel):

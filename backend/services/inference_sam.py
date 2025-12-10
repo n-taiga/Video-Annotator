@@ -8,8 +8,12 @@ from threading import Lock
 from typing import Optional, Union
 
 import numpy as np
+from typing import Iterable, Generator, Tuple
+import json
+import time
 import torch
 import cv2
+from fastapi.responses import StreamingResponse
 from PIL import Image
 from fastapi import HTTPException
 
@@ -17,6 +21,7 @@ from models.inference_sam import (
     EncodedMask,
     PredictPayload,
     FrameResult,
+    PropagatePayload,
     ObjectPayload,
     ObjectResult,
 )
@@ -161,9 +166,9 @@ class Inference:
     def start_session(self, path: Optional[Union[str, bytes]] = None, session_id: Optional[str] = None) -> str:
         """Create a new session and return its id.
 
-        If `path` (str path or bytes) is provided, call `self.predictor.init_state(path, ...)`
-        to initialize a full video inference_state immediately. If `path` is None, create an
-        empty state that will be populated on the first `predict` call for that session.
+        If `path` (str path or bytes) is provided, resolve it against DATA_ROOT/videos and
+        initialize the full video state immediately. Otherwise create an empty state that will
+        be populated on the first `predict` call for that session (stateless mode).
         """
         with self.autocast_context(), self.inference_lock:
             if not session_id:
@@ -171,8 +176,10 @@ class Inference:
             offload_video_to_cpu = self.device.type == "mps"
 
             if path is not None:
+                # Ensure the video path is valid and sandboxed under DATA_ROOT/videos
+                resolved = resolve_video_path(path if isinstance(path, str) else path.decode())
                 inference_state = self.predictor.init_state(
-                    path,
+                    str(resolved),
                     offload_video_to_cpu=offload_video_to_cpu,
                 )
             else:
@@ -368,6 +375,7 @@ class Inference:
 
                 mask = video_res_masks[obj_index, 0]
                 binary_mask = (mask > self.score_thresh).astype(np.uint8) * 255
+                mask_h, mask_w = binary_mask.shape
 
                 # Derive a simple per-object confidence score from the mask logits.
                 # We take the mean of the mask scores and pass through a sigmoid to map to [0,1].
@@ -383,8 +391,8 @@ class Inference:
                 png_bytes = mask_png_bytes(binary_mask)
                 
                 encoded_mask = EncodedMask(
-                    width=video_W,
-                    height=video_H,
+                    width=mask_w,
+                    height=mask_h,
                     format="png",
                     data=png_bytes if return_binary else base64.b64encode(png_bytes).decode("ascii"),
                 )
@@ -403,4 +411,208 @@ class Inference:
             frameIndex=frame_index,
             results=results,
             meta=payload.meta,
+        )
+
+    # ------------------------------------------------------------------
+    # Propagation (skeleton)
+    # ------------------------------------------------------------------
+    def propagate_between_frames(
+        self,
+        payload: PropagatePayload,
+        return_binary: bool = False,
+    ) -> Generator[Tuple[dict, dict, bytes], None, None]:
+        """Run SAM2 propagation forward/reverse within clipped span; fallback to target predict on failure."""
+
+        if not payload.sessionId:
+            raise HTTPException(status_code=400, detail="sessionId is required for propagate")
+        if not payload.videoPath:
+            raise HTTPException(status_code=400, detail="videoPath is required")
+
+        session_id = payload.sessionId
+        start_frame = min(payload.source.frameIndex, payload.target.frameIndex)
+        end_frame = max(payload.source.frameIndex, payload.target.frameIndex)
+        span = end_frame - start_frame + 1
+        mode = payload.mode
+
+        resolved_video_path = resolve_video_path(payload.videoPath)
+        fps, total_frames = self._get_video_info(str(resolved_video_path))
+        if not fps or fps <= 0:
+            fps = 30.0
+        max_frames = max(1, int(round(fps * (payload.maxSeconds or 10.0))))
+        clipped = False
+        if span > max_frames:
+            end_frame = start_frame + max_frames - 1
+            span = end_frame - start_frame + 1
+            clipped = True
+
+        # Ensure session exists and is video-backed (not stateless)
+        session = self.__get_session(session_id)
+        inference_state = session["state"]
+        if inference_state.get("num_frames", 0) <= 1:
+            raise HTTPException(status_code=409, detail="Session not initialized with full video. Call start_session(path=video) first.")
+        session["canceled"] = False
+
+        if total_frames > 0:
+            end_frame = min(end_frame, total_frames - 1)
+            start_frame = max(0, start_frame)
+            span = end_frame - start_frame + 1
+
+        # Add source/target prompts
+        with self.autocast_context(), self.inference_lock:
+            try:
+                for click in (payload.source, payload.target):
+                    coords = np.array([[p.x, p.y] for p in click.points], dtype=np.float32)
+                    labels = np.array([p.label for p in click.points], dtype=np.int32)
+                    self.predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=click.frameIndex,
+                        obj_id=click.objectId,
+                        points=coords,
+                        labels=labels,
+                        clear_old_points=False,
+                        normalize_coords=False,
+                    )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to add prompts: {exc}")
+
+        # Prepare overall meta
+        overall_meta = {
+            "sessionId": session_id,
+            "startFrame": start_frame,
+            "endFrame": end_frame,
+            "objectId": payload.target.objectId,
+            "span": span,
+            "clipped": clipped,
+            "maxFrames": max_frames,
+        }
+
+        start_ts = time.time()
+        produced = 0
+
+        def run_direction(reverse: bool):
+            nonlocal produced
+            # For reverse, start at end_frame; for forward, start at start_frame
+            start_idx = end_frame if reverse else start_frame
+            try:
+                for outputs in self.predictor.propagate_in_video(
+                    inference_state=inference_state,
+                    start_frame_idx=start_idx,
+                    max_frame_num_to_track=span,
+                    reverse=reverse,
+                ):
+                    if session.get("canceled"):
+                        return
+                    if time.time() - start_ts > 20.0:
+                        raise TimeoutError("propagate timeout")
+
+                    frame_idx, obj_ids, video_res_masks = outputs
+                    masks_binary = (video_res_masks > self.score_thresh)[:, 0].cpu().numpy()
+                    for obj_id, mask in zip(obj_ids, masks_binary):
+                        png_bytes = mask_png_bytes((mask > 0).astype(np.uint8) * 255)
+                        frame_meta = {
+                            "frameIndex": int(frame_idx),
+                            "objectId": int(obj_id),
+                            "width": video_res_masks.shape[-1],
+                            "height": video_res_masks.shape[-2],
+                            "fallback": False,
+                        }
+                        yield overall_meta, frame_meta, png_bytes
+                        produced += 1
+            except TimeoutError as exc:
+                raise HTTPException(status_code=504, detail=str(exc))
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"propagate failed: {exc}")
+
+        # Run forward / reverse based on mode
+        mode_val = payload.mode.value if hasattr(payload.mode, "value") else str(payload.mode)
+        if mode_val in ("bidirectional", "forward"):
+            yield from run_direction(reverse=False)
+        if mode_val in ("bidirectional", "reverse"):
+            yield from run_direction(reverse=True)
+
+        # Fallback if nothing produced
+        if produced == 0:
+            yield from self._fallback_single_frame(payload, overall_meta)
+
+    def _fallback_single_frame(
+        self, payload: PropagatePayload, overall_meta: dict
+    ) -> Generator[Tuple[dict, dict, bytes], None, None]:
+        target_frame = payload.target.frameIndex
+        obj_id = payload.target.objectId
+        predict_payload = PredictPayload(
+            sessionId=payload.sessionId,
+            frameIndex=target_frame,
+            videoPath=payload.videoPath,
+            objects=[ObjectPayload(objectId=obj_id, points=payload.target.points)],
+        )
+        result = self.predict(predict_payload, return_binary=True)
+
+        for obj in result.results:
+            frame_meta = {
+                "frameIndex": result.frameIndex,
+                "objectId": obj.objectId,
+                "width": obj.mask.width,
+                "height": obj.mask.height,
+                "fallback": True,
+                "reason": "empty",
+            }
+            png_bytes = obj.mask.data if isinstance(obj.mask.data, (bytes, bytearray)) else base64.b64decode(obj.mask.data)
+            yield overall_meta, frame_meta, png_bytes
+
+    def _get_video_info(self, path: str) -> Tuple[float, int]:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return 0.0, 0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.get(cv2.CAP_PROP_FRAME_COUNT) else 0
+        cap.release()
+        return fps, total
+
+    def propagate_route(self, payload: PropagatePayload, return_binary: bool = False):
+        """StreamingResponse wrapper for propagate_between_frames with multipart/mixed.
+
+        NOTE: Current implementation returns fallback-only result (no true propagation yet).
+        """
+
+        boundary = f"frame-boundary-{uuid.uuid4()}"
+
+        def iter_parts():
+            for overall_meta, frame_meta, png_bytes in self.propagate_between_frames(payload, return_binary=True):
+                # overall meta part
+                meta_bytes = json.dumps(overall_meta).encode("utf-8")
+                yield (
+                    f"--{boundary}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(meta_bytes)}\r\n\r\n"
+                ).encode("ascii")
+                yield meta_bytes
+                yield b"\r\n"
+
+                # frame meta
+                frame_bytes = json.dumps(frame_meta).encode("utf-8")
+                yield (
+                    f"--{boundary}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(frame_bytes)}\r\n\r\n"
+                ).encode("ascii")
+                yield frame_bytes
+                yield b"\r\n"
+
+                # mask png
+                yield (
+                    f"--{boundary}\r\n"
+                    f"Content-Type: image/png\r\n"
+                    f"Content-Length: {len(png_bytes)}\r\n"
+                    f"Content-Disposition: attachment; filename=\"mask_{frame_meta['frameIndex']}_{frame_meta['objectId']}.png\"\r\n\r\n"
+                ).encode("ascii")
+                yield png_bytes
+                yield b"\r\n"
+
+            yield f"--{boundary}--\r\n".encode("ascii")
+
+        return StreamingResponse(
+            iter_parts(),
+            media_type=f"multipart/mixed; boundary={boundary}",
         )

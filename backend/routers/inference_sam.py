@@ -1,7 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Body, Header
 from services.inference_sam import Inference
-from models.inference_sam import PredictPayload, FrameResult
+from models.inference_sam import PredictPayload, FrameResult, PropagatePayload
 from utils.multipart import build_multipart_response
 
 router = APIRouter(tags=["inference"])
@@ -81,4 +81,21 @@ def close_session(body: Optional[dict] = Body(None)):
     except HTTPException:
         raise
     except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/propagate")
+def propagate(payload: PropagatePayload, accept: Optional[str] = Header(None)):
+    """Propagate (skeleton): currently returns target-frame fallback as multipart."""
+    try:
+        use_multipart = accept and "multipart/mixed" in accept
+        if not use_multipart:
+            # force multipart because streaming parser expects it
+            use_multipart = True
+        return inference.propagate_route(payload, return_binary=use_multipart)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc))
