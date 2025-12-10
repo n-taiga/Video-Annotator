@@ -215,6 +215,7 @@ export function useAppController(): UseAppControllerResult {
     timelineModel,
     overlayCanvasRef,
     currentFramePoints,
+    clickPoints,
     activeTimelineLabels,
     saveStatus,
     onExportAnnotations: exportJSON,

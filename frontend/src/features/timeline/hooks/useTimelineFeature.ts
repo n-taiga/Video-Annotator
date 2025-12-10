@@ -184,6 +184,7 @@ export function useTimelineFeature<TClickPoint extends Record<string, unknown>>(
     selectionMenuHideDelay: HIDE_DELAY_ON_SELECTION_LEAVE,
     closeContextMenu: contextMenu.closeContextMenu,
     onSelectionEndpointClick: handleSelectionHandleClick,
+    clickPoints,
   })
 
   const clampAndFormatTime = useCallback((value: number) => {

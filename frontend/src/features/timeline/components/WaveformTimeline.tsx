@@ -9,6 +9,7 @@ interface WaveformTimelineProps {
   backgroundColor?: string
   className?: string
   onSeek?: (time: number) => void
+  showCursor?: boolean
 }
 
 const SAMPLE_TARGET = 2000
@@ -27,6 +28,7 @@ export default function WaveformTimeline({
   backgroundColor = '#0f172a',
   className,
   onSeek,
+  showCursor = true,
 }: WaveformTimelineProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -177,7 +179,7 @@ export default function WaveformTimeline({
       >
         <rect width={containerWidth} height={svgHeight} fill={backgroundColor} rx={4} ry={4} />
         <path d={waveformPath} fill={waveColor} opacity={0.85} />
-        {effectiveDuration > 0 && (
+        {showCursor && effectiveDuration > 0 && (
           <line
             x1={cursorX}
             x2={cursorX}

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import * as d3 from 'd3'
+import { getTrackletColor, MAX_TRACKLET_ID } from '../../../common/mask'
 import { getLabelColor } from '../../../common/colors'
 import type { LabelColorMap } from '../../../common/colors'
 import type { DragRange } from '../../video'
@@ -27,6 +28,7 @@ export interface UseTimelineRendererInput {
   brushGroupRef: MutableRefObject<d3.Selection<SVGGElement, unknown, null, undefined> | null>
   timeLineSelectionRef: MutableRefObject<d3.Selection<SVGLineElement, unknown, null, undefined> | null>
   scrubActiveRef: MutableRefObject<boolean>
+  clickPoints?: Array<Record<string, unknown>>
   selectionMenuRef: RefObject<HTMLDivElement>
   selectionMenuHideTimerRef: MutableRefObject<number | null>
   selectionMenuHideDelay: number
@@ -54,6 +56,7 @@ export function useTimelineRenderer({
   brushGroupRef,
   timeLineSelectionRef,
   scrubActiveRef,
+  clickPoints = [],
   fps,
   selectionMenuRef,
   selectionMenuHideTimerRef,
@@ -77,13 +80,31 @@ export function useTimelineRenderer({
   })
   useEffect(() => {
     if (!timelineRef.current || !svgRef.current) return
-    const totalWidth = Math.max(1, timelineRef.current.clientWidth)
-    const margin = { left: 10, right: 30 }
+    const computedStyle = window.getComputedStyle(timelineRef.current)
+    const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0
+    const paddingRight = parseFloat(computedStyle.paddingRight) || 0
+    const totalWidth = Math.max(1, timelineRef.current.clientWidth - paddingLeft - paddingRight)
+    const margin = { left: 0, right: 0 }
     const innerWidth = Math.max(1, totalWidth - margin.left - margin.right)
-    const height = 120
+    const BASE_HEIGHT = 120
     const ACTION_BAR_HEIGHT = 18
     const ACTION_BAR_Y = 18
     const ACTION_BAR_RADIUS = 8
+    // prepare point data early so we can size the svg to include lanes if needed
+    const pointData = (clickPoints || []).map(p => p || {})
+    const getObjectId = (pt: Record<string, unknown>) => (typeof pt.objectId === 'number' ? (pt.objectId as number) : null)
+    // create a fixed list of tracklet ids to always render bars for
+    const ids = Array.from({ length: MAX_TRACKLET_ID + 1 }, (_, i) => i)
+
+    // lane layout
+    const laneHeight = 8
+    const laneGap = 3
+    const lanesTopOffset = 0 // reduced offset so lanes sit closer below the base area
+    const lanesTop = BASE_HEIGHT + lanesTopOffset
+    // compute svg height so the last lane is fully visible (no trailing gap)
+    // keep minimal extra bottom padding to avoid clipping of the last lane
+    const height = ids.length > 0 ? lanesTop + ids.length * (laneHeight + laneGap) - laneGap + 8 : BASE_HEIGHT
+
     const svg = d3.select(svgRef.current)
     const svgNode = svg.node()
     svg.attr('width', totalWidth).attr('height', height)
@@ -96,10 +117,11 @@ export function useTimelineRenderer({
     xScaleRef.current = x
 
     const axis = d3.axisBottom(x).ticks(8).tickFormat(d => `${d}s`)
+    // keep axis fixed within the base area so added lanes grow below it
     const axisGroup = svg
       .append('g')
       .attr('class', 'x-axis')
-      .attr('transform', `translate(0,${height - 20})`)
+      .attr('transform', `translate(0,${BASE_HEIGHT - 20})`)
       .call(axis as any)
     axisGroup.style('pointer-events', 'none')
     axisGroup.selectAll('text').style('user-select', 'none')
@@ -161,6 +183,7 @@ export function useTimelineRenderer({
 
     const brush = d3
       .brushX()
+      // keep the brush in the base area
       .extent([[margin.left, 70], [margin.left + innerWidth, 94]])
       .handleSize(7)
       .on('brush end', event => {
@@ -252,7 +275,8 @@ export function useTimelineRenderer({
     const timeLine = svg
       .append('line')
       .attr('y1', 6)
-      .attr('y2', height - 6)
+      // limit timeline vertical extent to the base area so lanes are below
+      .attr('y2', BASE_HEIGHT - 6)
       .attr('x1', timeLineX)
       .attr('x2', timeLineX)
       .attr('stroke', '#f97316')
@@ -306,6 +330,8 @@ export function useTimelineRenderer({
       svg.on('pointerleave.scrub', endScrub)
     }
 
+    // Click-point and lane rendering moved to overlay component (TrackletOverlay)
+
     return () => {
       xScaleRef.current = null
       brushRef.current = null
@@ -331,6 +357,7 @@ export function useTimelineRenderer({
     timeLineSelectionRef,
     xScaleRef,
     fps,
+    clickPoints,
   ])
 
   useEffect(() => {

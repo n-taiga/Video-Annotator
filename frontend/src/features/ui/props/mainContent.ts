@@ -81,12 +81,17 @@ export interface BuildTimelineSectionPropsArgs<TClickPoint extends Record<string
   labels: UseLabelsFeatureResult
   saveStatus: SaveStatus
   onExport: () => void | Promise<void>
+  waveform?: WaveformTimelineComponentProps
+  clickPoints?: Array<Record<string, unknown>>
 }
-
-export function buildTimelineSectionProps<TClickPoint extends Record<string, unknown>>({ video, timeline, labels, saveStatus, onExport }: BuildTimelineSectionPropsArgs<TClickPoint>): TimelineSectionComponentProps {
+export function buildTimelineSectionProps<TClickPoint extends Record<string, unknown>>({ video, timeline, labels, saveStatus, onExport, waveform, clickPoints }: BuildTimelineSectionPropsArgs<TClickPoint>): TimelineSectionComponentProps {
   return {
     timelineRef: timeline.refs.timelineRef,
     svgRef: timeline.refs.svgRef,
+    xScaleRef: timeline.refs.xScaleRef,
+    clickPoints: clickPoints ?? [],
+    fps: video.display.effectiveFps,
+    seekVideo: video.player.seekVideo,
     startDisplay: video.display.startDisplay,
     endDisplay: video.display.endDisplay,
     lengthDisplay: video.display.lengthDisplay,
@@ -98,6 +103,7 @@ export function buildTimelineSectionProps<TClickPoint extends Record<string, unk
     onAddInteraction: () => timeline.annotations.addInteraction(),
     onExport,
     saveStatus,
+    waveformProps: waveform,
   }
 }
 
@@ -107,15 +113,23 @@ export interface BuildWaveformTimelinePropsArgs {
   duration: number
   onSeek: (time: number) => void
   className?: string
+  height?: number
+  waveColor?: string
+  backgroundColor?: string
+  showCursor?: boolean
 }
 
-export function buildWaveformTimelineProps({ audioSrc, currentTime, duration, onSeek, className }: BuildWaveformTimelinePropsArgs): WaveformTimelineComponentProps {
+export function buildWaveformTimelineProps({ audioSrc, currentTime, duration, onSeek, className, height, waveColor, backgroundColor, showCursor }: BuildWaveformTimelinePropsArgs): WaveformTimelineComponentProps {
   return {
     audioSrc,
     currentTime,
     durationOverride: duration,
     onSeek,
     className,
+    height,
+    waveColor,
+    backgroundColor,
+    showCursor,
   }
 }
 
@@ -149,18 +163,16 @@ export interface BuildMainContentPropsArgs {
   previewPanels: VideoPreviewGroup
   videoPanel: VideoPanelComponentProps
   timelineSection: TimelineSectionComponentProps
-  waveformTimeline: WaveformTimelineComponentProps
   labelTimeline: LabelTimelineComponentProps
   actionTable: ActionTableComponentProps
 }
 
-export function buildMainContentProps({ previewPanels, videoPanel, timelineSection, waveformTimeline, labelTimeline, actionTable }: BuildMainContentPropsArgs) {
+export function buildMainContentProps({ previewPanels, videoPanel, timelineSection, labelTimeline, actionTable }: BuildMainContentPropsArgs) {
   return {
     leftPreviewProps: previewPanels.left,
     rightPreviewProps: previewPanels.right,
     videoPanelProps: videoPanel,
     timelineSectionProps: timelineSection,
-    waveformTimelineProps: waveformTimeline,
     labelTimelineProps: labelTimeline,
     actionTableProps: actionTable,
   }

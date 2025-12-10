@@ -29,6 +29,7 @@ export interface BuildAppLayoutPropsArgs<TClickPoint extends Record<string, unkn
   timelineModel: UseTimelineModelOutput
   overlayCanvasRef: RefObject<HTMLCanvasElement>
   currentFramePoints: Array<Pick<ClickPoint, 'id' | 'normX' | 'normY' | 'objectId'>>
+  clickPoints: TClickPoint[]
   activeTimelineLabels: string[]
   saveStatus: SaveStatus
   onExportAnnotations: () => void | Promise<void>
@@ -52,6 +53,7 @@ export function buildAppLayoutProps<TClickPoint extends Record<string, unknown>>
   timelineModel,
   overlayCanvasRef,
   currentFramePoints,
+  clickPoints,
   activeTimelineLabels,
   saveStatus,
   onExportAnnotations,
@@ -79,20 +81,26 @@ export function buildAppLayoutProps<TClickPoint extends Record<string, unknown>>
     labelColors: labels.state.labelColors,
   })
 
-  const timelineSectionProps = buildTimelineSectionProps({
-    video,
-    timeline,
-    labels,
-    saveStatus,
-    onExport: onExportAnnotations,
-  })
-
   const waveformTimelineProps = buildWaveformTimelineProps({
     audioSrc: video.media.videoSource,
     currentTime: video.player.currentTime,
     duration: video.player.duration,
     onSeek: video.player.seekVideo,
-    className: 'waveform-panel',
+    className: 'timeline-waveform-track',
+    height: 120,
+    backgroundColor: 'transparent',
+    showCursor: false,
+  })
+
+  const timelineSectionProps = buildTimelineSectionProps({
+    video,
+    timeline,
+    labels,
+    saveStatus,
+      onExport: onExportAnnotations,
+    // pass click points from the prediction state so overlay can render markers across time
+    clickPoints: clickPoints as any,
+    waveform: waveformTimelineProps,
   })
 
   const labelTimelineProps = buildLabelTimelineProps({
@@ -110,7 +118,6 @@ export function buildAppLayoutProps<TClickPoint extends Record<string, unknown>>
     previewPanels: video.previewPanels,
     videoPanel: videoPanelProps,
     timelineSection: timelineSectionProps,
-    waveformTimeline: waveformTimelineProps,
     labelTimeline: labelTimelineProps,
     actionTable: actionTableProps,
   })
