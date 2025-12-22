@@ -5,10 +5,12 @@ import type { Interaction, TimelineSnapshot } from '../../timeline'
 export interface UseHistoryInput<TClickPoint extends Record<string, unknown>> {
   interactionsRef: MutableRefObject<Interaction[]>
   clickPointsRef: MutableRefObject<TClickPoint[]>
+  clickedSegmentKeysRef: MutableRefObject<string[]>
   cloneInteractions: (list: Interaction[]) => Interaction[]
   cloneClickPoints: (list: TClickPoint[]) => TClickPoint[]
   setInteractions: Dispatch<SetStateAction<Interaction[]>>
   setClickPoints: Dispatch<SetStateAction<TClickPoint[]>>
+  setClickedSegmentKeys: Dispatch<SetStateAction<string[]>>
   onSnapshotRestored?: (snapshot: TimelineSnapshot<TClickPoint>) => void | Promise<void>
 }
 
@@ -18,7 +20,7 @@ export interface UseHistoryOutput<TClickPoint extends Record<string, unknown>> {
   historyRedoStack: TimelineSnapshot<TClickPoint>[]
   setHistoryRedoStack: Dispatch<SetStateAction<TimelineSnapshot<TClickPoint>[]>>
   cloneSnapshot: (snapshot: TimelineSnapshot<TClickPoint>) => TimelineSnapshot<TClickPoint>
-  pushHistory: (prevInteractions?: Interaction[], prevClickPoints?: TClickPoint[]) => void
+  pushHistory: (prevInteractions?: Interaction[], prevClickPoints?: TClickPoint[], prevClickedSegmentKeys?: string[]) => void
   undo: () => void
   redo: () => void
 }
@@ -26,10 +28,12 @@ export interface UseHistoryOutput<TClickPoint extends Record<string, unknown>> {
 export function useHistory<TClickPoint extends Record<string, unknown>>({
   interactionsRef,
   clickPointsRef,
+  clickedSegmentKeysRef,
   cloneInteractions,
   cloneClickPoints,
   setInteractions,
   setClickPoints,
+  setClickedSegmentKeys,
   onSnapshotRestored,
 }: UseHistoryInput<TClickPoint>): UseHistoryOutput<TClickPoint> {
   const [historyStack, setHistoryStack] = useState<TimelineSnapshot<TClickPoint>[]>([])
@@ -39,15 +43,17 @@ export function useHistory<TClickPoint extends Record<string, unknown>>({
     (snapshot: TimelineSnapshot<TClickPoint>): TimelineSnapshot<TClickPoint> => ({
       interactions: cloneInteractions(snapshot.interactions),
       clickPoints: cloneClickPoints(snapshot.clickPoints),
+      clickedSegmentKeys: snapshot.clickedSegmentKeys ? [...snapshot.clickedSegmentKeys] : [],
     }),
     [cloneClickPoints, cloneInteractions],
   )
 
   const pushHistory = useCallback(
-    (prevInteractions?: Interaction[], prevClickPoints?: TClickPoint[]) => {
+    (prevInteractions?: Interaction[], prevClickPoints?: TClickPoint[], prevClickedSegmentKeys?: string[]) => {
       const inter = prevInteractions ? cloneInteractions(prevInteractions) : cloneInteractions(interactionsRef.current)
       const clicks = prevClickPoints ? cloneClickPoints(prevClickPoints) : cloneClickPoints(clickPointsRef.current)
-      const snapshot: TimelineSnapshot<TClickPoint> = { interactions: inter, clickPoints: clicks }
+      const clicked = typeof prevClickedSegmentKeys !== 'undefined' ? prevClickedSegmentKeys : clickedSegmentKeysRef.current
+      const snapshot: TimelineSnapshot<TClickPoint> = { interactions: inter, clickPoints: clicks, clickedSegmentKeys: [...clicked] }
       setHistoryStack(stack => {
         const last = stack.length ? stack[stack.length - 1] : null
         if (last) {
@@ -73,11 +79,13 @@ export function useHistory<TClickPoint extends Record<string, unknown>>({
       const currentSnapshot: TimelineSnapshot<TClickPoint> = {
         interactions: cloneInteractions(interactionsRef.current),
         clickPoints: cloneClickPoints(clickPointsRef.current),
+        clickedSegmentKeys: [...clickedSegmentKeysRef.current],
       }
       setHistoryRedoStack(prev => [...prev, cloneSnapshot(currentSnapshot)])
       const restored = cloneSnapshot(snapshot)
       setInteractions(restored.interactions)
       setClickPoints(restored.clickPoints)
+      setClickedSegmentKeys(restored.clickedSegmentKeys ?? [])
       if (onSnapshotRestored) {
         void Promise.resolve(onSnapshotRestored(restored))
       }
@@ -93,11 +101,13 @@ export function useHistory<TClickPoint extends Record<string, unknown>>({
       const currentSnapshot: TimelineSnapshot<TClickPoint> = {
         interactions: cloneInteractions(interactionsRef.current),
         clickPoints: cloneClickPoints(clickPointsRef.current),
+        clickedSegmentKeys: [...clickedSegmentKeysRef.current],
       }
       setHistoryStack(prev => [...prev, cloneSnapshot(currentSnapshot)])
       const restored = cloneSnapshot(snapshot)
       setInteractions(restored.interactions)
       setClickPoints(restored.clickPoints)
+      setClickedSegmentKeys(restored.clickedSegmentKeys ?? [])
       if (onSnapshotRestored) {
         void Promise.resolve(onSnapshotRestored(restored))
       }

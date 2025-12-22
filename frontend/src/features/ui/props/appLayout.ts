@@ -37,7 +37,7 @@ export interface BuildAppLayoutPropsArgs<TClickPoint extends Record<string, unkn
   onDeletePoint?: (id: string) => void | Promise<void>
   getPointColor?: (objectId: number | null | undefined) => string
   activeTrackletId?: number
-  onIncrementTracklet?: () => void
+  onIncrementTracklet?: (delta: number) => void
   removeInteraction: (index: number) => void
   onRemoveAction: (actionName: string) => Promise<void> | void
   onRenameAction: (previousName: string, nextName: string) => Promise<boolean> | boolean

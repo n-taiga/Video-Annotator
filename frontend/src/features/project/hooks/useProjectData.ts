@@ -135,6 +135,7 @@ export function useProjectData(): UseProjectDataResult {
     setScenarioId,
     userClearedScenario,
     metadataOptions,
+    restrictToMetadata,
     scenarioSelectRef,
     scenarioDropdownOpen,
     setScenarioDropdownOpen,

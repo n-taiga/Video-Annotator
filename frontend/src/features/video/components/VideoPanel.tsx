@@ -31,8 +31,8 @@ interface VideoPanelProps {
   getPointColor?: (objectId: number | null | undefined) => string
   /** Current object id in use */
   activeTrackletId?: number
-  /** Cycle to next object id */
-  onIncrementTracklet?: () => void
+  /** Adjust object id (delta can be positive/negative) */
+  onIncrementTracklet?: (delta: number) => void
 }
 
 export default function VideoPanel({ videoKey, videoRef, overlayRef, src, currentTime, duration, volume, muted, onVolumeChange, onToggleMute, playbackRate, onPlaybackRateChange, onSeekBy, activeLabels, activeColors, clickPoints, onDeletePoint, onVideoClick, fps, getPointColor, activeTrackletId, onIncrementTracklet }: VideoPanelProps) {
@@ -147,29 +147,78 @@ export default function VideoPanel({ videoKey, videoRef, overlayRef, src, curren
                 </button>
               ))}
               {typeof onIncrementTracklet === 'function' ? (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    e.preventDefault()
-                    onIncrementTracklet()
-                  }}
+                <div
                   style={{
                     position: 'absolute',
                     left: 12,
                     bottom: 12,
-                    pointerEvents: 'auto',
-                    border: 'none',
-                    borderRadius: 9999,
-                    padding: '6px 12px',
-                    background: getPointColor ? getPointColor(activeTrackletId) : '#3B82F6',
-                    color: '#0B1220',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    padding: '4px 8px',
+                    borderRadius: 12,
+                    background: 'rgba(15,23,42,0.78)',
+                    color: '#E2E8F0',
                     fontWeight: 600,
-                    cursor: 'pointer',
-                    boxShadow: '0 2px 6px rgba(15,23,42,0.35)'
+                    fontSize: 12,
+                    pointerEvents: 'auto',
+                    boxShadow: '0 1px 4px rgba(15,23,42,0.28)',
                   }}
                 >
-                  + ID {typeof activeTrackletId === 'number' ? activeTrackletId : ''}
-                </button>
+                  <button
+                    aria-label="Previous ID"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      e.preventDefault()
+                      if (typeof onIncrementTracklet === 'function') {
+                        onIncrementTracklet(-1)
+                      }
+                    }}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#E2E8F0',
+                      cursor: 'pointer',
+                      padding: '2px 5px',
+                      fontSize: 12,
+                    }}
+                  >
+                    –
+                  </button>
+                  <div
+                    style={{
+                      padding: '2px 6px',
+                      borderRadius: 6,
+                      background: getPointColor ? getPointColor(activeTrackletId) : '#3B82F6',
+                      color: '#0B1220',
+                      minWidth: 32,
+                      textAlign: 'center',
+                      fontSize: 12,
+                    }}
+                  >
+                    ID {typeof activeTrackletId === 'number' ? activeTrackletId : ''}
+                  </div>
+                  <button
+                    aria-label="Next ID"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      e.preventDefault()
+                      if (typeof onIncrementTracklet === 'function') {
+                        onIncrementTracklet(1)
+                      }
+                    }}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#E2E8F0',
+                      cursor: 'pointer',
+                      padding: '2px 5px',
+                      fontSize: 12,
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
               ) : null}
             </div>
           </div>

@@ -204,14 +204,6 @@ export function useTimelineRenderer({
           if (prev.start === start && prev.end === end) return prev
           return { start, end }
         })
-        const pointerEvent = event.sourceEvent as PointerEvent | undefined
-        if (pointerEvent && svgNode) {
-          const [px] = d3.pointer(pointerEvent, svgNode)
-          const pointerTime = x.invert(px)
-          if (Number.isFinite(pointerTime)) {
-            seekVideo(snapToFrame(pointerTime))
-          }
-        }
       })
 
     brushRef.current = brush
@@ -310,6 +302,15 @@ export function useTimelineRenderer({
         if (lineNode && target !== lineNode) return
         scrubActiveRef.current = true
         seekFromPointer(event as PointerEvent)
+        // ensure we continue to receive pointer events even if the pointer
+        // leaves the svg (prevents scrub from losing the pointer)
+        try {
+          if ((svgNode as any).setPointerCapture && typeof event.pointerId === 'number') {
+            ;(svgNode as any).setPointerCapture(event.pointerId)
+          }
+        } catch (_err) {
+          // some browsers may throw if capture is not available; ignore
+        }
       })
 
       svg.on('pointermove.scrub', event => {
@@ -322,12 +323,19 @@ export function useTimelineRenderer({
         seekFromPointer(pointerEvent)
       })
 
-      const endScrub = () => {
+      const endScrub = (event?: PointerEvent) => {
         scrubActiveRef.current = false
+        try {
+          if (event && (svgNode as any).releasePointerCapture && typeof event.pointerId === 'number') {
+            ;(svgNode as any).releasePointerCapture(event.pointerId)
+          }
+        } catch (_err) {
+          // ignore
+        }
       }
 
-      svg.on('pointerup.scrub', endScrub)
-      svg.on('pointerleave.scrub', endScrub)
+      svg.on('pointerup.scrub', (event: PointerEvent) => endScrub(event))
+      svg.on('pointerleave.scrub', (event: PointerEvent) => endScrub(event))
     }
 
     // Click-point and lane rendering moved to overlay component (TrackletOverlay)
@@ -459,14 +467,9 @@ export function useTimelineRenderer({
       pointerState.handle = null
       pointerState.dragged = false
       if (dragged || !handle) return
-      const { start, end } = dragRangeRef.current
-      const timeToSeek = handle === 'left' ? start : end
-        if ((timeToSeek ?? null) !== null && Number.isFinite(timeToSeek as number)) {
-          const targetTime = snapToFrame(timeToSeek as number)
-          const override = onSelectionEndpointClick?.({ side: handle === 'left' ? 'start' : 'end', time: targetTime })
-          const finalTime = typeof override === 'number' && Number.isFinite(override) ? override : targetTime
-          seekVideo(finalTime)
-        }
+      // Previously: clicking a handle would seek the playhead to that endpoint.
+      // Requested: disable this auto-seek on click (keep drag behavior intact).
+      // No action on simple clicks now; only dragging moves the range.
     }
 
     window.addEventListener('pointermove', onPointerMove)

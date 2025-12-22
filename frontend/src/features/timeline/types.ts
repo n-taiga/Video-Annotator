@@ -31,6 +31,7 @@ export interface TimelineSelectionMenuState {
 export interface TimelineSnapshot<TClickPoint extends Record<string, unknown>> {
 	interactions: Interaction[]
 	clickPoints: TClickPoint[]
+	clickedSegmentKeys?: string[]
 }
 
 export type SelectionEndpoint = 'start' | 'end'

@@ -10,6 +10,8 @@ interface TimelineSectionProps {
   clickPoints?: Array<Record<string, unknown>>
   fps?: number
   seekVideo?: (time: number) => void
+  activeSegmentKeys?: string[]
+  onSegmentToggle?: (segmentKey: string) => void
   startDisplay: string
   endDisplay: string
   lengthDisplay: string
@@ -31,6 +33,8 @@ export default function TimelineSection({
   clickPoints,
   fps,
   seekVideo,
+  activeSegmentKeys,
+  onSegmentToggle,
   startDisplay,
   endDisplay,
   lengthDisplay,
@@ -48,7 +52,16 @@ export default function TimelineSection({
     <div className="timeline" ref={timelineRef}>
       <div className="timeline-stack">
         {/* Overlay renders tracklet bars and click points above the waveform/svg stack */}
-        <TrackletOverlay timelineRef={timelineRef} xScaleRef={xScaleRef ?? null} clickPoints={clickPoints} fps={fps} baseHeight={120} onSeek={seekVideo} />
+        <TrackletOverlay
+          timelineRef={timelineRef}
+          xScaleRef={xScaleRef ?? null}
+          clickPoints={clickPoints}
+          fps={fps}
+          baseHeight={120}
+          onSeek={seekVideo}
+          activeSegmentKeys={activeSegmentKeys}
+          onSegmentToggle={onSegmentToggle}
+        />
         {waveformProps && (
           <div className="timeline-waveform">
             <WaveformTimeline {...waveformProps} />

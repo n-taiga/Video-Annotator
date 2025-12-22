@@ -28,7 +28,7 @@ export interface BuildVideoPanelPropsArgs {
   onDeletePoint?: (id: string) => void | Promise<void>
   getPointColor?: (objectId: number | null | undefined) => string
   activeTrackletId?: number
-  onIncrementTracklet?: () => void
+  onIncrementTracklet?: (delta: number) => void
   activeTimelineLabels: string[]
   labelColors: LabelColorMap
 }
@@ -92,6 +92,8 @@ export function buildTimelineSectionProps<TClickPoint extends Record<string, unk
     clickPoints: clickPoints ?? [],
     fps: video.display.effectiveFps,
     seekVideo: video.player.seekVideo,
+    activeSegmentKeys: timeline.annotations.clickedSegmentKeys,
+    onSegmentToggle: timeline.annotations.toggleSegmentSelection,
     startDisplay: video.display.startDisplay,
     endDisplay: video.display.endDisplay,
     lengthDisplay: video.display.lengthDisplay,

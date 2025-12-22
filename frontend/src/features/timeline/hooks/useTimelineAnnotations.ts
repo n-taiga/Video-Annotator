@@ -23,6 +23,9 @@ export interface UseTimelineAnnotationsOutput<TClickPoint extends Record<string,
   setSelectedAction: Dispatch<SetStateAction<string>>
   contact: boolean
   setContact: Dispatch<SetStateAction<boolean>>
+  clickedSegmentKeys: string[]
+  toggleSegmentSelection: (key: string) => void
+  clearSegmentSelections: () => void
   historyStack: TimelineSnapshot<TClickPoint>[]
   setHistoryStack: Dispatch<SetStateAction<TimelineSnapshot<TClickPoint>[]>>
   historyRedoStack: TimelineSnapshot<TClickPoint>[]
@@ -51,6 +54,8 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
   const [contact, setContact] = useState(initialContact)
   const interactionsRef = useRef(interactions)
   const clickPointsRef = useRef(clickPoints)
+  const [clickedSegmentKeys, setClickedSegmentKeysState] = useState<string[]>([])
+  const clickedSegmentKeysRef = useRef<string[]>(clickedSegmentKeys)
 
   useEffect(() => {
     interactionsRef.current = interactions
@@ -59,6 +64,10 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
   useEffect(() => {
     clickPointsRef.current = clickPoints
   }, [clickPoints])
+
+  useEffect(() => {
+    clickedSegmentKeysRef.current = clickedSegmentKeys
+  }, [clickedSegmentKeys])
 
   useEffect(() => {
     setSelectedAction(prev => (prev && actions.includes(prev) ? prev : actions[0] ?? ''))
@@ -76,14 +85,39 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
   const history = useHistory<TClickPoint>({
     interactionsRef,
     clickPointsRef,
+    clickedSegmentKeysRef,
     cloneInteractions,
     cloneClickPoints,
     setInteractions,
     setClickPoints,
+    setClickedSegmentKeys: setClickedSegmentKeysState,
     onSnapshotRestored,
   })
 
   const { historyStack, setHistoryStack, historyRedoStack, setHistoryRedoStack, cloneSnapshot, pushHistory, undo, redo } = history
+
+  const toggleSegmentSelection = useCallback(
+    (key: string) => {
+      if (!key) return
+      setClickedSegmentKeysState(prev => {
+        const has = prev.includes(key)
+        const next = has ? prev.filter(k => k !== key) : [...prev, key]
+        pushHistory(interactionsRef.current, clickPointsRef.current, prev)
+        setHistoryRedoStack([])
+        return next
+      })
+    },
+    [pushHistory, setHistoryRedoStack],
+  )
+
+  const clearSegmentSelections = useCallback(() => {
+    setClickedSegmentKeysState(prev => {
+      if (prev.length === 0) return prev
+      pushHistory(interactionsRef.current, clickPointsRef.current, prev)
+      setHistoryRedoStack([])
+      return []
+    })
+  }, [pushHistory, setHistoryRedoStack])
 
   const addInteraction = useCallback(
     (labelOverride?: string, rangeOverride?: { start: number; end: number }) => {
@@ -103,7 +137,7 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
       }
       setInteractions(prev => {
         const next = [...prev, inter]
-        pushHistory(prev, clickPointsRef.current)
+        pushHistory(prev, clickPointsRef.current, clickedSegmentKeysRef.current)
         setHistoryRedoStack([])
         return next
       })
@@ -117,7 +151,7 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
       setInteractions(prev => {
         if (index < 0 || index >= prev.length) return prev
         const next = prev.filter((_, i) => i !== index)
-        pushHistory(prev, clickPointsRef.current)
+        pushHistory(prev, clickPointsRef.current, clickedSegmentKeysRef.current)
         setHistoryRedoStack([])
         return next
       })
@@ -131,7 +165,7 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
       setInteractions(prev => {
         if (index < 0 || index >= prev.length) return prev
         const next = prev.map((it, i) => (i === index ? { ...it, action_label: label } : it))
-        pushHistory(prev, clickPointsRef.current)
+        pushHistory(prev, clickPointsRef.current, clickedSegmentKeysRef.current)
         setHistoryRedoStack([])
         return next
       })
@@ -146,6 +180,9 @@ export function useTimelineAnnotations<TClickPoint extends Record<string, unknow
     setSelectedAction,
     contact,
     setContact,
+    clickedSegmentKeys,
+    toggleSegmentSelection,
+    clearSegmentSelections,
     historyStack,
     setHistoryStack,
     historyRedoStack,

@@ -58,7 +58,7 @@ export interface UsePredictionStateOutput {
   setClickPoints: Dispatch<SetStateAction<ClickPoint[]>>
   overlayCanvasRef: RefObject<HTMLCanvasElement>
   activeTrackletId: number
-  cycleActiveTracklet: () => void
+  adjustActiveTracklet: (delta: number) => void
   trackletColorFor: (objectId: number | null | undefined) => string
   currentFramePoints: ClickPoint[]
   handleSnapshotRestore: (snapshot: TimelineSnapshot<ClickPoint>) => Promise<void>
@@ -351,9 +351,10 @@ export function usePredictionState({
 
   const trackletColorFor = useCallback((objectId: number | null | undefined) => getTrackletColor(objectId), [])
 
-  const cycleActiveTracklet = useCallback(() => {
+  const adjustActiveTracklet = useCallback((delta: number) => {
+    const step = Number.isFinite(delta) ? Math.trunc(delta) : 1
     setActiveTrackletId(prev => {
-      const next = (Math.trunc(prev) + 1) % (MAX_TRACKLET_ID + 1)
+      const next = (Math.trunc(prev) + step + (MAX_TRACKLET_ID + 1)) % (MAX_TRACKLET_ID + 1)
       return next
     })
   }, [])
@@ -391,7 +392,7 @@ export function usePredictionState({
     setClickPoints,
     overlayCanvasRef,
     activeTrackletId,
-    cycleActiveTracklet,
+    adjustActiveTracklet,
     trackletColorFor,
     currentFramePoints,
     handleSnapshotRestore,

@@ -18,6 +18,7 @@ export function buildActionFormProps({ labels, project }: BuildActionFormPropsAr
     handleAddObject: labels.actions.handleAddObject,
     loadingObjectLabels: labels.state.loadingObjectLabels,
     savingObjectLabels: labels.state.savingObjectLabels,
+    showObjectSelector: Boolean(project.state.restrictToMetadata),
     environment: project.state.environment,
     setEnvironment: project.actions.setEnvironment,
     taskLabel: project.state.taskLabel,

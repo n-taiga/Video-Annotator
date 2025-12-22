@@ -103,6 +103,12 @@ export function useKeyboardShortcuts({
       const v = mainVideoRef.current
       if (!v) return
 
+      // Prefer the live video time (less lag than lifted currentTime state).
+      const getVideoTime = () => {
+        const raw = Number.isFinite(v.currentTime) ? v.currentTime : currentTime
+        return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
+      }
+
       if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault()
         if (v.paused) {
@@ -117,7 +123,7 @@ export function useKeyboardShortcuts({
         const DEFAULT_SELECTION_LEN = 1.0 // seconds
         const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
         const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
-        const t = clampTime(currentTime || 0)
+        const t = clampTime(getVideoTime())
         const start = Number(t.toFixed(3))
         // If no selection exists, create it and open the selection menu just
         // like the 'S' key does so the menu receives focus immediately.
@@ -169,7 +175,7 @@ export function useKeyboardShortcuts({
         const DEFAULT_SELECTION_LEN = 1.0 // seconds
         const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
         const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
-        const t = clampTime(currentTime || 0)
+        const t = clampTime(getVideoTime())
         const end = Number(t.toFixed(3))
         // If no selection exists, create it and open the selection menu like 'S'
         if (dragRange.start === null && dragRange.end === null) {
@@ -211,6 +217,15 @@ export function useKeyboardShortcuts({
           })
         }
       } else if (e.key && e.key.toLowerCase() === 's') {
+        // Toggle selection label console: if it's open, close it; otherwise open it.
+        if (contextMenu.open && contextMenu.type === 'selection') {
+          e.preventDefault()
+          clearSelectionMenuHideTimer()
+          setSelectionDropdownOpen(false)
+          closeContextMenu()
+          return
+        }
+
         // Open selection label console. If no selection exists, create a
         // default-length selection centered on currentTime, then open the
         // selection context menu positioned above the timeline selection.
@@ -218,7 +233,7 @@ export function useKeyboardShortcuts({
         const DEFAULT_SELECTION_LEN = 1.0
         const maxDuration = Number.isFinite(duration) && duration > 0 ? duration : v.duration
         const clampTime = (t: number) => (Number.isFinite(maxDuration) ? Math.max(0, Math.min(maxDuration, t)) : t)
-        const t = clampTime(currentTime || 0)
+        const t = clampTime(getVideoTime())
 
         let start = dragRange.start
         let end = dragRange.end
@@ -351,5 +366,5 @@ export function useKeyboardShortcuts({
     // (like page scrolling on ArrowUp/ArrowDown) before it occurs.
     window.addEventListener('keydown', onGlobalKey, true)
     return () => window.removeEventListener('keydown', onGlobalKey, true)
-  }, [actions, clearSelectionMenuHideTimer, currentTime, duration, dragRange, selectionMenuAction])
+  }, [actions, clearSelectionMenuHideTimer, contextMenu, currentTime, duration, dragRange, selectionMenuAction])
 }

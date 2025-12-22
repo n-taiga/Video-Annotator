@@ -9,6 +9,7 @@ export interface ProjectFeatureState {
   metadataOptions: string[]
   videoOptions: string[]
   selectedVideoFile: string
+  restrictToMetadata: boolean
   scenarioDropdownOpen: boolean
   referenceVideoFiles: string[]
   referenceVisibility: Record<string, boolean>
@@ -55,6 +56,7 @@ export function useProjectFeature(): UseProjectFeatureResult {
     state: {
       scenarioId: projectData.scenarioId,
       userClearedScenario: projectData.userClearedScenario,
+      restrictToMetadata: projectData.restrictToMetadata,
       metadataOptions: projectData.metadataOptions,
       videoOptions: projectData.videoOptions,
       selectedVideoFile: projectData.selectedVideoFile,
